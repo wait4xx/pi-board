@@ -51,7 +51,11 @@ error. Silent eviction is a v0.2+ policy question, not a v0.1 behavior.
 invisible to read/grep (filter at query time) and physically pruned when a
 fully-expired segment rotates. `meta.json` holds the monotonic id counter
 and segment bookkeeping; writes to it use tmp+rename (a crash mid-write
-corrupts one segment's tail at worst, never the table).
+corrupts one segment's tail at worst, never the table). Pruning's
+"last line expired ⇒ whole segment expired" shortcut assumes a
+monotonic wall clock; a clock rollback of TTL magnitude can misjudge a
+segment (entries merely become invisible-per-query — nothing readable is
+silently dropped, and a torn tail line is never pruned, only skipped).
 
 **Env overrides (gate review a).** Every bound in `src/shared/limits.ts`
 can be tightened or widened by the operator via `PI_BOARD_<NAME>` env
@@ -82,16 +86,23 @@ write time (closed enum, no free-form `type`).
 ### 3.2 Shape
 
 ```
-{ id, type, author, room, at, text, detail?, ref?, claimId?, leaseRef? }
+{ id, type, author, room, at, text, detail?, ref?, leaseRef? }
 ```
 
-- `text` — the summary line, ≤ `MAX_TEXT_CHARS` (280); always present,
+(Erratum, review round: the original draft listed a `claimId?` field that
+was never implemented — `ref` covers git-reachable anchoring, and the
+claim↔lease correlation is `leaseRef`. The shipped surface exposes it via
+`piboard write --lease-ref`.)
+
+- `text` — the summary line, ≤ `MAX_TEXT_CHARS` (280 BYTES — the bounds
+  are byte bounds, not UTF-16 units); always present,
   always short: summaries must survive a turn boundary by being cheap to read.
-- `detail` — optional long form, ≤ `MAX_DETAIL_CHARS` (8 KiB); stored at
+- `detail` — optional long form, ≤ `MAX_DETAIL_CHARS` (8 KiB bytes, read
+  bounded at ingestion); stored at
   write time, surfaced only by `read --id` (constraint #3). `write` takes
   it via `--detail-file` or stdin (never an unbounded argv blob).
 - `ref` — optional git-reachable anchor (path, commit, URL).
-- CLAIM entries may carry `leaseRef` (the `mesh_claim` lease id) — pure
+- Entries may carry `leaseRef` (the `mesh_claim` lease id) — pure
   annotation for correlation; enforcement never lives here (constraint #4).
 
 ### 3.3 Read and grep
