@@ -55,6 +55,9 @@ export async function parseWriteArgs(values: Map<string, string>): Promise<Write
   let detail: string | undefined;
   const detailFile = values.get("detail-file");
   if (detailFile !== undefined) {
+    if (detailFile === "-" && process.stdin.isTTY === true) {
+      return { ok: false, error: "--detail-file - refuses an interactive terminal (pipe the content or pass a file path)" };
+    }
     try {
       detail = detailFile === "-" ? await readStdinBody() : readFileSync(detailFile, "utf8");
     } catch (err) {

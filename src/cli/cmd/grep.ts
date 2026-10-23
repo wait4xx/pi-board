@@ -42,7 +42,14 @@ export function cmdGrep(query: string | undefined, values: Map<string, string>):
       ...(typeRaw !== undefined ? { type: typeRaw } : {}),
     });
   } catch (err) {
-    sayErr(err instanceof Error ? err.message : String(err));
+    const message = err instanceof Error ? err.message : String(err);
+    // a malformed query is a USAGE error, same contract as an empty one —
+    // scripts branch on exit codes, not on which flavor of bad input
+    if (message.startsWith("invalid_query")) {
+      sayErr(message);
+      return EXIT_USAGE;
+    }
+    sayErr(message);
     return EXIT_ERROR;
   }
   for (const row of rows) say(grepLine(row));
