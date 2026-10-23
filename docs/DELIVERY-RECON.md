@@ -55,7 +55,10 @@ fix landed as a separate commit with its own test:
 
 - Fix chain: `e318314` → `6f5e307` → `3a7a181` → `dc41d30` → `ece67d8`
   (review round, this lane) preceded by `c2d61a7` (MAJOR-2, adjacent lane).
-- All numbers in §1 measured at `ece67d8` = HEAD of this delivery.
+- All numbers in §1 measured at `ece67d8`. Documentation then completed at
+  `1aca55f` (this file, README, #13 draft) and `db43b8d` (one DESIGN §2
+  hunk that missed its staging window) — docs-only commits; re-measured at
+  the final tip `db43b8d`: build clean, 55/55/0/0, smoke 9/9.
 
 ## 5. Replay instructions
 
