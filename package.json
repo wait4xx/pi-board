@@ -1,0 +1,42 @@
+{
+  "name": "pi-board",
+  "version": "0.1.0",
+  "description": "Shared context board for pi-mesh — typed entries (OBSERVED/FACT/FAIL/CLAIM/PATCH_SUMMARY), bounded append-only storage with rotation and TTL, boolean full-text search. CLI-first (piboard). Zero runtime dependencies.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "piboard": "dist/src/cli.js"
+  },
+  "exports": {
+    ".": "./dist/src/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "dist",
+    "!dist/test",
+    "README.md",
+    "DESIGN.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node scripts/run-tests.mjs",
+    "smoke": "node scripts/piboard-smoke.mjs"
+  },
+  "peerDependencies": {
+    "pi-mesh-extension": "*"
+  },
+  "peerDependenciesMeta": {
+    "pi-mesh-extension": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.6.0"
+  }
+}
