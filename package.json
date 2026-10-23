@@ -4,6 +4,11 @@
   "description": "Shared context board for pi-mesh — typed entries (OBSERVED/FACT/FAIL/CLAIM/PATCH_SUMMARY), bounded append-only storage with rotation and TTL, boolean full-text search. CLI-first (piboard). Zero runtime dependencies.",
   "type": "module",
   "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./extension.ts"
+    ]
+  },
   "engines": {
     "node": ">=20"
   },
@@ -17,6 +22,7 @@
   "files": [
     "src",
     "dist",
+    "extension.ts",
     "!dist/test",
     "README.md",
     "DESIGN.md",

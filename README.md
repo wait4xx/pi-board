@@ -23,6 +23,18 @@ NO storage in the broker — the mesh stays a router, never a database.
 
 Design and maintainer constraints: see [DESIGN.md](DESIGN.md).
 
+## Native pi package (proposal branch)
+
+When installed as a Pi package (`"pi": { "extensions": ["./extension.ts"] }`
+in package.json), the board becomes **native alongside pi-mesh**: every
+session registers `board_write` / `board_read` / `board_grep` /
+`board_watch` automatically, and auto-joins the board peer to the room
+saved by `piboard join <room>` (or set by `$PI_BOARD_ROOM`) at session
+start — no skill, no manual step. One `piboard join zoma` per machine and
+every pi session on that machine gets the room's board natively. Writes
+announce to the room through the mesh; a down broker degrades honestly
+to store-only mode.
+
 ## Explicitly out of scope for v0.1
 
 Broker-side storage (permanent red line), pi-mesh extension tool
