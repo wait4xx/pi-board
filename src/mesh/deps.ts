@@ -9,7 +9,11 @@
 // Dependency face (spike 2026-10-23, probe: join member/observer, observer
 // read-only + room-member broker gates, broadcast, reconnect — 7/7 on
 // every version tested): 0.7.2 / 0.7.5 / 0.7.6 / 0.7.7 / 0.8.0 / 0.9.0,
-// and 0.10.0 (full 57-test suite replayed against it — external review).
+// and 0.10.x (full 57-test suite replayed against 0.10.0 — external
+// review). 0.10.1+ adds MESH_NO_AUTO_BROKER (connect fail-fast instead
+// of auto-spawn) — used by the extension's AVAILABILITY regression test
+// for a hermetic down-broker simulation; 0.10.2 documents the embedding
+// contract in the pi-mesh README.
 // The board needs the CLIENT CORE only; the ctl control plane (0.9.0+) is
 // NOT required. package.json therefore declares peerDependencies "*"
 // (installed where a mesh already runs) with >=0.7.2 as the verified

@@ -38,7 +38,14 @@ if (files.length === 0) {
   process.exit(1);
 }
 
-const res = spawnSync(process.execPath, ["--test", ...files], { stdio: "inherit" });
+// Spawn-proof the WHOLE suite (pi-mesh ≥0.10.1): MESH_NO_AUTO_BROKER=1 makes
+// any connect without a listening broker fail fast instead of auto-spawning
+// one. Tests that need a broker create it in-process (it IS listening — the
+// flag never fires); a stray client outliving a teardown now fails honestly
+// instead of leaking a detached broker. The reaper below stays as the
+// belt-and-braces net.
+const testEnv = { ...process.env, MESH_NO_AUTO_BROKER: "1" };
+const res = spawnSync(process.execPath, ["--test", ...files], { stdio: "inherit", env: testEnv });
 reapOrphanTestBrokers();
 process.exit(res.status ?? 1);
 

@@ -96,20 +96,22 @@ describe("native extension: registration + store-only behavior", () => {
   });
 
   it("AVAILABILITY (review regression): tools answer IMMEDIATELY after session_start — reads never wait on the peer", async () => {
-    if (process.platform === "win32") {
-      // the impossible-runtime trick below is POSIX-only; visible skip, never silent
-      console.log("skip: POSIX-only runtime path trick (Windows parity follow-up)");
-      return;
-    }
     const guard = envGuard(...ENV_KEYS);
     const root = tmpStateRoot();
-    // An IMPOSSIBLE runtime dir (a path under a FILE): mkdirSync fails →
-    // ensureBroker throws fast → the attach fails WITHOUT auto-spawning a
-    // broker (an empty dir would spawn one — ensureBroker's job — and leak a
-    // detached broker + live sockets into the test run).
+    // Hermetic down-broker simulation (pi-mesh ≥0.10.1): MESH_NO_AUTO_BROKER=1
+    // makes the connect fail fast with broker_unavailable — NO spawn, any
+    // platform. (The pre-0.10.1 workaround aimed the runtime dir at an
+    // impossible POSIX path; an empty dir would auto-spawn a broker.)
+    const emptyRuntime = mkdtempSync(path.join(tmpdir(), "pi-board-nobroker-"));
     guard.set("PI_BOARD_STATE_DIR", root);
     guard.set("PI_BOARD_ROOM", "slow-room");
-    guard.set("PI_BOARD_RUNTIME_DIR", "/dev/null/impossible-broker-dir");
+    guard.set("PI_BOARD_RUNTIME_DIR", emptyRuntime);
+    // save/restore, NEVER a bare delete: the background attach can still be
+    // inside its 3s connectProbe when this test ends — it re-reads the env
+    // AFTER the finally, and a deleted flag makes it spawn the broker we
+    // are trying to prove absent (the exact orphan the reaper kept catching)
+    const savedFlag = process.env.MESH_NO_AUTO_BROKER;
+    process.env.MESH_NO_AUTO_BROKER = "1";
     try {
       const { api, tools, fire } = fakeApi();
       boardExtension(api);
@@ -123,8 +125,11 @@ describe("native extension: registration + store-only behavior", () => {
       fire("session_shutdown");
       await new Promise((r2) => setTimeout(r2, 300));
     } finally {
+      if (savedFlag === undefined) delete process.env.MESH_NO_AUTO_BROKER;
+      else process.env.MESH_NO_AUTO_BROKER = savedFlag;
       guard.restore();
       rmSync(root, { recursive: true, force: true });
+      rmSync(emptyRuntime, { recursive: true, force: true });
     }
   });
 
