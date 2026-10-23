@@ -21,7 +21,12 @@ export function configPath(env: NodeJS.ProcessEnv = process.env): string {
 export function loadBoardConfig(env: NodeJS.ProcessEnv = process.env): BoardConfig | undefined {
   const path = configPath(env);
   if (!existsSync(path)) return undefined;
-  const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<BoardConfig>;
+  let raw: Partial<BoardConfig>;
+  try {
+    raw = JSON.parse(readFileSync(path, "utf8")) as Partial<BoardConfig>;
+  } catch {
+    throw new Error(`board config unreadable (${path}): not valid JSON — fix or remove it`);
+  }
   if (typeof raw.room !== "string" || raw.room === "") {
     throw new Error(`board config unreadable (${path}): room missing`);
   }
@@ -52,17 +57,22 @@ export function resolveRoom(
   values: Map<string, string>,
   env: NodeJS.ProcessEnv = process.env,
 ): RoomResolution {
+  let config: BoardConfig | undefined;
+  try {
+    config = loadBoardConfig(env);
+  } catch (err) {
+    // an unreadable board.json is a clean usage error (one line, exit 2),
+    // never a raw stack from the global catch — review nit
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
   const fromFlag = values.get("room");
   if (fromFlag !== undefined && fromFlag !== "") {
-    const config = loadBoardConfig(env);
     return { ok: true, room: fromFlag, config, joined: config !== undefined && config.room === fromFlag };
   }
   const fromEnv = env.PI_BOARD_ROOM;
   if (fromEnv !== undefined && fromEnv !== "") {
-    const config = loadBoardConfig(env);
     return { ok: true, room: fromEnv, config, joined: config !== undefined && config.room === fromEnv };
   }
-  const config = loadBoardConfig(env);
   if (config !== undefined) return { ok: true, room: config.room, config, joined: true };
   return {
     ok: false,

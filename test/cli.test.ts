@@ -115,12 +115,23 @@ describe("task_0008: piboard CLI — store-only flow (no mesh)", () => {
     assert.equal((await run(["write", "--type", "NOPE", "--text", "x", "--room", "r"])).code, 2);
     assert.equal((await run(["grep"])).code, 2);
     assert.equal((await run(["read", "--room", "r", "--wat"])).code, 2);
+    // a malformed query is a usage error too — same contract as an empty one
+    assert.equal((await run(["grep", "--room", "r1", ",,&"])).code, 2);
   }));
 
   it("no room anywhere = honest usage error (exit 2), not a guess", withRunCtx(async ({ run }) => {
     const r = await run(["read"]);
     assert.equal(r.code, 2);
     assert.ok(r.err.includes("--room"));
+  }));
+
+  it("corrupt board.json = one clean usage line (exit 2), never a stack", withRunCtx(async ({ run, stateDir }) => {
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(path.join(stateDir, "board.json"), "NOT JSON", "utf8");
+    const r = await run(["read"]);
+    assert.equal(r.code, 2);
+    assert.ok(r.err.includes("not valid JSON"));
+    assert.ok(!r.err.includes("at ")); // no stack trace
   }));
 
   it("room resolution: --room flag wins over the joined config", withRunCtx(async ({ run, writeConfig }) => {
