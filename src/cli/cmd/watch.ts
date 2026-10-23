@@ -37,9 +37,10 @@ export function cmdWatch(values: Map<string, string>): number {
   const notifiable: NotifiableEntry[] = (readWindow(store, store.limits.readWindowMax) as Array<{
     id: string;
     type: EntryType;
+    room: string;
     text: string;
     at?: string;
-  }>).map((e) => ({ id: e.id, type: e.type, short: e.text, at: e.at }));
+  }>).map((e) => ({ id: e.id, type: e.type, room: e.room, short: e.text, at: e.at }));
   const line = failSummaryLine(selectNewFails(notifiable, lastAt));
   if (line !== "") say(line);
 

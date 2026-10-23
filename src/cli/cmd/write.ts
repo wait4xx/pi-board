@@ -109,7 +109,7 @@ export async function cmdWrite(args: WriteArgs): Promise<number> {
   try {
     const peer = await connectBoardPeer({ room, observer, alias: config!.alias });
     try {
-      const notifiable: NotifiableEntry = { id: entry.id, type: entry.type, short: entry.text, at: entry.at };
+      const notifiable: NotifiableEntry = { id: entry.id, type: entry.type, room, short: entry.text, at: entry.at };
       const res = await announceWrite(peer, notifiable);
       if (!res.ok) {
         say(

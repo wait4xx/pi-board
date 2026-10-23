@@ -217,7 +217,7 @@ describe("native extension: AUTO-JOIN on a real broker", () => {
         while (received.length === 0 && Date.now() < deadline) {
           await new Promise((r) => setTimeout(r, 100));
         }
-        assert.match(received[0] ?? "", /board FACT b\d+: autojoin announcement works/);
+        assert.match(received[0] ?? "", /board\[zoma\] FACT b\d+: autojoin announcement works/);
       });
     } finally {
       guard.restore();

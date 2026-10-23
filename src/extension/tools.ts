@@ -119,7 +119,7 @@ async function execBoardWrite(getRuntime: GetRuntime, params: Record<string, unk
   // announce after persist — a failed announce never undoes the write
   if (runtime.peer !== null && runtime.peer.room === room && !runtime.observer) {
     try {
-      const notifiable: NotifiableEntry = { id: entry.id, type: entry.type, short: entry.text, at: entry.at };
+      const notifiable: NotifiableEntry = { id: entry.id, type: entry.type, room, short: entry.text, at: entry.at };
       const res = await announceWrite(runtime.peer, notifiable);
       if (!res.ok) lines.push(`announcement not delivered (${res.status}${res.reason !== undefined ? `: ${res.reason}` : ""}) — entry ${entry.id} is persisted`);
     } catch (err) {
@@ -190,6 +190,7 @@ function execBoardWatch(getRuntime: GetRuntime, params: Record<string, unknown>)
   const notifiable: NotifiableEntry[] = (readWindow(store, store.limits.readWindowMax) as BoardEntry[]).map((e) => ({
     id: e.id,
     type: e.type,
+    room: e.room,
     short: e.text,
     at: e.at,
   }));
