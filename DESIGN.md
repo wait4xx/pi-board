@@ -53,6 +53,13 @@ fully-expired segment rotates. `meta.json` holds the monotonic id counter
 and segment bookkeeping; writes to it use tmp+rename (a crash mid-write
 corrupts one segment's tail at worst, never the table).
 
+**Env overrides (gate review a).** Every bound in `src/shared/limits.ts`
+can be tightened or widened by the operator via `PI_BOARD_<NAME>` env
+vars (e.g. `PI_BOARD_ENTRY_TTL_MS` — 7 d is tight for long task lines,
+and TTL bounds the searchable span). Parsing is fail-closed: an
+unusable value (non-numeric, ≤ 0) is a startup error naming the
+variable, never a silent fallback.
+
 **Forbidden keys, fail-closed.** The write path scans `text` AND `detail`
 against `FORBIDDEN_KEY_PATTERNS` (secret shapes: cloud keys, tokens,
 private-key blocks — the pi-mesh ledger's pattern class). A match refuses
@@ -95,7 +102,10 @@ write time (closed enum, no free-form `type`).
 - `grep "a,b & c"` — `,` = OR, `&` = AND, case-insensitive substring over
   `text` and `detail`; precedence: AND binds tighter than OR (same as
   search-engine convention). A miss returns an honest empty list —
-  exit 0 with zero rows, never an error, never invented rows.
+  exit 0 with zero rows, never an error, never invented rows. Every row
+  always carries the entry `id`; a hit found only in `detail` is marked
+  `(in detail)` — a summary line that hides the match must not confuse,
+  and `read --id` is the natural follow-up (gate review b).
 
 ## 4. Search semantics summary
 
