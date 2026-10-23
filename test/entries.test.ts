@@ -158,6 +158,22 @@ describe("entries: boolean grep truth table", () => {
     }
   });
 
+  it("grep reaches beyond the read window into rotated-alive segments", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-board-span-"));
+    try {
+      const b = board(dir, { PI_BOARD_READ_WINDOW_MAX: "2", PI_BOARD_READ_WINDOW_DEFAULT: "2" });
+      for (let i = 1; i <= 5; i += 1) b.write({ type: "FACT", author: "a", room: "mesh", text: `row ${i}` });
+      assert.equal(b.read().length, 2, "the window is a presentation bound");
+      assert.deepEqual(
+        b.grep("row 1").map((r) => r.entry.id),
+        ["b1"],
+        "an entry far outside the window stays greppable (DESIGN: rotated segments stay greppable)",
+      );
+    } finally {
+      cleanup(dir);
+    }
+  });
+
   it("a miss is an honest empty list, and a term-less query is a usage error", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-board-miss-"));
     try {

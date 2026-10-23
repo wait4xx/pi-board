@@ -56,7 +56,10 @@ export class TypedBoard {
       throw new Error(`grep_invalid: query has no usable terms: ${JSON.stringify(query)}`);
     }
     const rows: GrepRow[] = [];
-    for (const entry of this.store.read(this.store.limits.readWindowMax) as unknown as Entry[]) {
+    // Full visible span, not the read window: rotated-but-alive segments
+    // must stay greppable (DESIGN §2) — the window is a PRESENTATION bound
+    // for read, never a search boundary. TTL already bounds the span.
+    for (const entry of this.store.read(Number.MAX_SAFE_INTEGER) as unknown as Entry[]) {
       const inText = (term: string): boolean => entry.text.toLowerCase().includes(term);
       const inDetail = (term: string): boolean =>
         entry.detail !== undefined && entry.detail.toLowerCase().includes(term);
