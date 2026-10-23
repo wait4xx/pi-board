@@ -5,7 +5,14 @@
 // every session that loads the extension connects a board peer to that
 // room automatically — no skill, no manual step. The peer exists for ONE
 // purpose: announcing writes (§5.3); reads/greps are always local store
-// operations and work even when the peer is down (honest degraded mode).
+// operations.
+//
+// AVAILABILITY CONTRACT (external review, PR #2): the runtime is built
+// SYNCHRONOUSLY in store-only form at session_start — tools answer
+// immediately, reads/greps with an explicit room never wait on the peer.
+// The peer attaches in the background; if the broker is down or slow the
+// session stays fully usable (peerStatus says so honestly), and the first
+// announceable write retries the connection once (lazy reconnect).
 import { randomBytes } from "node:crypto";
 import { boardDir, BoardStore } from "../store/store.js";
 import { connectBoardPeer, type BoardPeer } from "../mesh/peer.js";
@@ -16,11 +23,18 @@ export interface BoardRuntime {
   room: string | undefined;
   /** Read-only membership (from the joined config or $PI_BOARD_OBSERVER). */
   observer: boolean;
-  /** The auto-joined announce peer — null when no room or connect failed. */
+  /** The auto-joined announce peer — null while connecting / failed / none. */
   peer: BoardPeer | null;
   /** Honest one-line status of the auto-join (shown in tool results). */
   peerStatus: string;
   getStore(room?: string): BoardStore;
+  /**
+   * Lazy single reconnect: called before an announceable write when
+   * peer === null. No-ops when a peer exists, no room is joined, the
+   * board is read-only, or an attempt (background or lazy) already ran —
+   * one attempt per session, never a retry loop.
+   */
+  ensurePeer(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -44,43 +58,52 @@ function sessionPeerAlias(configured: string | undefined, env: NodeJS.ProcessEnv
   return `${base}-${randomBytes(2).toString("hex")}`;
 }
 
+/** One peer connection attempt; fills peer/peerStatus on the runtime. */
+async function attachPeer(rt: BoardRuntime, env: NodeJS.ProcessEnv): Promise<void> {
+  const room = rt.room;
+  if (room === undefined) return;
+  try {
+    const peer = await connectBoardPeer({
+      room,
+      observer: rt.observer,
+      alias: sessionPeerAlias((rt as { aliasBase?: string }).aliasBase, env),
+      noReconnect: true, // ONE attempt — a failed connect must never leave a retrying client behind
+      ...(env.PI_BOARD_RUNTIME_DIR !== undefined && env.PI_BOARD_RUNTIME_DIR !== ""
+        ? { runtimeDir: env.PI_BOARD_RUNTIME_DIR }
+        : {}),
+    });
+    rt.peer = peer;
+    rt.peerStatus = `auto-joined ${room} as ${rt.observer ? "observer" : "member"}`;
+  } catch (err) {
+    rt.peerStatus = `auto-join failed (${err instanceof Error ? err.message : String(err)}) — store-only mode`;
+  }
+}
+
 /**
- * Build the runtime and AUTO-JOIN the room (fire-and-forget connect: a
- * broker that is down must never break session start — tools answer in
- * degraded store-only mode with an honest status line).
+ * Build the runtime SYNCHRONOUSLY in store-only form (cheap, fs-only) and
+ * start the background peer attach. Tools are usable the instant this
+ * returns — the availability contract above.
  */
-export async function buildBoardRuntime(env: NodeJS.ProcessEnv = process.env): Promise<BoardRuntime> {
-  const room = sessionRoom(env);
-  const config = room === undefined ? undefined : (() => { try { return loadBoardConfig(env); } catch { return undefined; } })();
+export function buildBoardRuntime(env: NodeJS.ProcessEnv = process.env): BoardRuntime {
+  let config: { room: string; observer: boolean; alias: string } | undefined;
+  try {
+    config = loadBoardConfig(env);
+  } catch {
+    config = undefined; // degraded honestly — sessionRoom() reports the same
+  }
+  const room = env.PI_BOARD_ROOM !== undefined && env.PI_BOARD_ROOM !== "" ? env.PI_BOARD_ROOM : config?.room;
   const observer = env.PI_BOARD_OBSERVER === "true" || config?.observer === true;
 
   const stores = new Map<string, BoardStore>();
-  let peer: BoardPeer | null = null;
-  let peerStatus: string;
-
-  if (room === undefined) {
-    peerStatus = "no board room joined — store-only mode (pass room explicitly, or run `piboard join <room>`)";
-  } else {
-    try {
-      peer = await connectBoardPeer({
-        room,
-        observer,
-        alias: sessionPeerAlias(config?.alias, env),
-        ...(env.PI_BOARD_RUNTIME_DIR !== undefined && env.PI_BOARD_RUNTIME_DIR !== ""
-          ? { runtimeDir: env.PI_BOARD_RUNTIME_DIR }
-          : {}),
-      });
-      peerStatus = `auto-joined ${room} as ${observer ? "observer" : "member"}`;
-    } catch (err) {
-      peerStatus = `auto-join failed (${err instanceof Error ? err.message : String(err)}) — store-only mode`;
-    }
-  }
-
-  return {
+  let peerAttempted = false;
+  const rt: BoardRuntime = {
     room,
     observer,
-    peer,
-    peerStatus,
+    peer: null,
+    peerStatus:
+      room === undefined
+        ? "no board room joined — store-only mode (pass room explicitly, or run `piboard join <room>`)"
+        : "connecting…",
     getStore(explicit?: string): BoardStore {
       const target = explicit ?? room;
       if (target === undefined) throw new Error("no room: pass room explicitly or run `piboard join <room>`");
@@ -91,8 +114,18 @@ export async function buildBoardRuntime(env: NodeJS.ProcessEnv = process.env): P
       }
       return store;
     },
+    ensurePeer: async () => {
+      if (rt.peer !== null || room === undefined || rt.observer || peerAttempted) return;
+      peerAttempted = true;
+      await attachPeer(rt, env);
+    },
     close: async () => {
-      if (peer !== null) await peer.close().catch(() => {});
+      if (rt.peer !== null) await rt.peer.close().catch(() => {});
     },
   };
+  if (room !== undefined) {
+    peerAttempted = true; // the background attempt counts as the session's one shot
+    void attachPeer(rt, env).catch(() => {});
+  }
+  return rt;
 }

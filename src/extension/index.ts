@@ -18,14 +18,15 @@ export default function boardExtension(pi: ExtensionAPI): void {
   registerTools(pi, getRuntime);
 
   pi.on("session_start", () => {
-    // fire-and-forget: a down broker never breaks session start
-    void buildBoardRuntime()
-      .then((built) => {
-        runtime = built;
-      })
-      .catch(() => {
-        runtime = null; // honest degraded mode: tools with explicit rooms still work
-      });
+    // SYNCHRONOUS store-only build: tools are usable the instant this
+    // fires — reads/greps never wait on the peer (availability contract,
+    // runtime.ts). The peer attaches in the background; a down broker
+    // never blocks session start.
+    try {
+      runtime = buildBoardRuntime();
+    } catch {
+      runtime = null; // honest degraded mode: tools with explicit rooms still work
+    }
   });
 
   pi.on("session_shutdown", () => {

@@ -95,6 +95,39 @@ describe("native extension: registration + store-only behavior", () => {
     );
   });
 
+  it("AVAILABILITY (review regression): tools answer IMMEDIATELY after session_start — reads never wait on the peer", async () => {
+    if (process.platform === "win32") {
+      // the impossible-runtime trick below is POSIX-only; visible skip, never silent
+      console.log("skip: POSIX-only runtime path trick (Windows parity follow-up)");
+      return;
+    }
+    const guard = envGuard(...ENV_KEYS);
+    const root = tmpStateRoot();
+    // An IMPOSSIBLE runtime dir (a path under a FILE): mkdirSync fails →
+    // ensureBroker throws fast → the attach fails WITHOUT auto-spawning a
+    // broker (an empty dir would spawn one — ensureBroker's job — and leak a
+    // detached broker + live sockets into the test run).
+    guard.set("PI_BOARD_STATE_DIR", root);
+    guard.set("PI_BOARD_ROOM", "slow-room");
+    guard.set("PI_BOARD_RUNTIME_DIR", "/dev/null/impossible-broker-dir");
+    try {
+      const { api, tools, fire } = fakeApi();
+      boardExtension(api);
+      fire("session_start"); // NO settle delay — the runtime must already be usable
+      const w = await exec(toolByName(tools, "board_write"), { type: "FACT", text: "immediate availability" });
+      assert.match(w, /^b\d+ FACT .*: immediate availability/); // NOT "not ready"
+      assert.ok(!w.includes("not ready"));
+      const r = await exec(toolByName(tools, "board_read"), {});
+      assert.ok(r.includes("immediate availability"));
+      // drain the failed background attach + session teardown
+      fire("session_shutdown");
+      await new Promise((r2) => setTimeout(r2, 300));
+    } finally {
+      guard.restore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("board_write → board_read → board_grep with an explicit room (no join needed)", async () => {
     const guard = envGuard(...ENV_KEYS);
     const root = tmpStateRoot();

@@ -8,8 +8,9 @@
 //
 // Dependency face (spike 2026-10-23, probe: join member/observer, observer
 // read-only + room-member broker gates, broadcast, reconnect — 7/7 on
-// every version tested): 0.7.2 / 0.7.5 / 0.7.6 / 0.7.7 / 0.8.0 / 0.9.0.
-// The board needs the CLIENT CORE only; the ctl control plane (0.9.0) is
+// every version tested): 0.7.2 / 0.7.5 / 0.7.6 / 0.7.7 / 0.8.0 / 0.9.0,
+// and 0.10.0 (full 57-test suite replayed against it — external review).
+// The board needs the CLIENT CORE only; the ctl control plane (0.9.0+) is
 // NOT required. package.json therefore declares peerDependencies "*"
 // (installed where a mesh already runs) with >=0.7.2 as the verified
 // floor — see spec.md §2.3.

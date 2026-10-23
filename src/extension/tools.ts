@@ -116,17 +116,24 @@ async function execBoardWrite(getRuntime: GetRuntime, params: Record<string, unk
   }
 
   const lines = [entryLine(entry)];
-  // announce after persist — a failed announce never undoes the write
-  if (runtime.peer !== null && runtime.peer.room === room && !runtime.observer) {
-    try {
-      const notifiable: NotifiableEntry = { id: entry.id, type: entry.type, room, short: entry.text, at: entry.at };
-      const res = await announceWrite(runtime.peer, notifiable);
-      if (!res.ok) lines.push(`announcement not delivered (${res.status}${res.reason !== undefined ? `: ${res.reason}` : ""}) — entry ${entry.id} is persisted`);
-    } catch (err) {
-      lines.push(`announcement failed (${err instanceof Error ? err.message : String(err)}) — entry ${entry.id} is persisted`);
+  // announce after persist — a failed announce never undoes the write.
+  // Lazy reconnect: the first announceable write retries the peer once
+  // when the background attach failed (broker was down at session start).
+  if (!runtime.observer && room === runtime.room) {
+    if (runtime.peer === null) await runtime.ensurePeer();
+    if (runtime.peer !== null) {
+      try {
+        const notifiable: NotifiableEntry = { id: entry.id, type: entry.type, room, short: entry.text, at: entry.at };
+        const res = await announceWrite(runtime.peer, notifiable);
+        if (!res.ok) lines.push(`announcement not delivered (${res.status}${res.reason !== undefined ? `: ${res.reason}` : ""}) — entry ${entry.id} is persisted`);
+      } catch (err) {
+        lines.push(`announcement failed (${err instanceof Error ? err.message : String(err)}) — entry ${entry.id} is persisted`);
+      }
+    } else {
+      lines.push(`store-only write (no peer): ${runtime.peerStatus}`);
     }
-  } else if (runtime.peer === null) {
-    lines.push(`store-only write (no peer): ${runtime.peerStatus}`);
+  } else if (room !== runtime.room) {
+    lines.push("store-only write: room is not the joined room — no announce for cross-room writes");
   }
   return textResult(lines.join("\n"));
 }
@@ -194,7 +201,10 @@ function execBoardWatch(getRuntime: GetRuntime, params: Record<string, unknown>)
     short: e.text,
     at: e.at,
   }));
-  const line = failSummaryLine(selectNewFails(notifiable, 0)); // full visible history: the tool digests ALL FAILs, caller decides
+  // TOOL variant: newest-first — when the 400-char clip cuts, what falls
+  // off is the OLDEST failure, not the fresh one a turn needs first (the
+  // CLI boundary variant keeps selectNewFails' oldest-first contract).
+  const line = failSummaryLine(selectNewFails(notifiable, 0).reverse());
   return textResult(line === "" ? "(no FAIL entries recorded)" : line);
 }
 
