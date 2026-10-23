@@ -12,7 +12,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { FORBIDDEN_KEY_PATTERNS, loadLimits, type Limits } from "../shared/limits.js";
+import { FORBIDDEN_KEY_PATTERNS, loadLimits, STATE_DIR_NAME, type Limits } from "../shared/limits.js";
 
 const SEGMENT_GLOB = /^seg-(\d{6})\.jsonl$/;
 
@@ -48,11 +48,15 @@ export interface StoreOptions {
   now?: () => number;
 }
 
-/** `<root>/<room>/`; root = `$PI_BOARD_STATE_DIR` or `~/.pi-board`. */
-export function boardDir(room: string, env: NodeJS.ProcessEnv = process.env): string {
+/** State root: `$PI_BOARD_STATE_DIR` or `~/.pi-board` (STATE_DIR_NAME). */
+export function stateRoot(env: NodeJS.ProcessEnv = process.env): string {
   const override = env.PI_BOARD_STATE_DIR;
-  const root = override !== undefined && override !== "" ? override : join(homedir(), ".pi-board");
-  return join(root, room);
+  return override !== undefined && override !== "" ? override : join(homedir(), STATE_DIR_NAME);
+}
+
+/** `<root>/<room>/` — one directory per room. */
+export function boardDir(room: string, env: NodeJS.ProcessEnv = process.env): string {
+  return join(stateRoot(env), room);
 }
 
 export class BoardStore {

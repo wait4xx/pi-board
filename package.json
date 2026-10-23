@@ -8,7 +8,7 @@
     "node": ">=20"
   },
   "bin": {
-    "piboard": "dist/src/cli.js"
+    "piboard": "dist/src/cli/piboard.js"
   },
   "exports": {
     ".": "./dist/src/index.js",
