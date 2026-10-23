@@ -11,7 +11,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import boardExtension from "../src/extension/index.js";
 import type { ExtensionAPI, ToolDefinition } from "../src/extension/pi-types.js";
-import { sessionRoom } from "../src/extension/runtime.js";
+import { sessionRoom, sessionPeerAlias } from "../src/extension/runtime.js";
 
 /** Capturing fake host: records registered tools + event handlers. */
 function fakeApi(): {
@@ -195,6 +195,13 @@ describe("native extension: registration + store-only behavior", () => {
       guard.restore();
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("sessionPeerAlias carries the room and respects the mesh alias bound (≤32, no brackets)", () => {
+    assert.equal(sessionPeerAlias("board", "muse", "b636"), "board-muse-b636");
+    const long = sessionPeerAlias("board", "a".repeat(40), "ab12");
+    assert.ok(long.length <= 32, `alias too long: ${long}`);
+    assert.ok(/^[a-z][a-z0-9-]{1,31}$/.test(long)); // the pi-mesh ALIAS_REGEX shape
   });
 
   it("sessionRoom: env wins over config; unreadable config degrades honestly", () => {

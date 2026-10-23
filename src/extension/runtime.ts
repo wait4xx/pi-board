@@ -23,10 +23,12 @@ export interface BoardRuntime {
   room: string | undefined;
   /** Read-only membership (from the joined config or $PI_BOARD_OBSERVER). */
   observer: boolean;
-  /** The auto-joined announce peer — null while connecting / failed / none. */
+  /** The announce peer — null while connecting / failed / none. */
   peer: BoardPeer | null;
   /** Honest one-line status of the auto-join (shown in tool results). */
   peerStatus: string;
+  /** The joined alias base (board.json), before room+rand suffixing. */
+  aliasBase: string;
   getStore(room?: string): BoardStore;
   /**
    * Lazy single reconnect: called before an announceable write when
@@ -50,12 +52,20 @@ export function sessionRoom(env: NodeJS.ProcessEnv = process.env): string | unde
   }
 }
 
-/** Per-session peer alias: the joined alias + a short random suffix, so N
- *  sessions on one machine never collide on strictAlias (the cli-<rand>
- *  house pattern, board-side). */
-function sessionPeerAlias(configured: string | undefined, env: NodeJS.ProcessEnv): string {
-  const base = env.PI_BOARD_ALIAS ?? configured ?? "board";
-  return `${base}-${randomBytes(2).toString("hex")}`;
+/** Per-session peer alias: the joined alias + the ROOM + a short random
+ *  suffix, so the sender name says which board speaks (`board-muse-b636`,
+ *  not a bare `board-b636`) and N sessions on one machine never collide
+ *  on strictAlias (the cli-<rand> house pattern, board-side). Mesh alias
+ *  rules forbid brackets (ALIAS_REGEX: ^[a-z][a-z0-9-]{1,31}$) — the
+ *  announce BODY keeps the precise board[<room>] form, the alias carries
+ *  the room hyphenated. */
+export function sessionPeerAlias(base: string, room: string, suffix: string): string {
+  const prefix = `${base}-${room}`.slice(0, 26); // ≤32 total with the -<rand4> suffix
+  return `${prefix}-${suffix}`;
+}
+
+function randAliasSuffix(): string {
+  return randomBytes(2).toString("hex");
 }
 
 /** One peer connection attempt; fills peer/peerStatus on the runtime. */
@@ -66,7 +76,7 @@ async function attachPeer(rt: BoardRuntime, env: NodeJS.ProcessEnv): Promise<voi
     const peer = await connectBoardPeer({
       room,
       observer: rt.observer,
-      alias: sessionPeerAlias((rt as { aliasBase?: string }).aliasBase, env),
+      alias: sessionPeerAlias(env.PI_BOARD_ALIAS ?? rt.aliasBase ?? "board", room, randAliasSuffix()),
       noReconnect: true, // ONE attempt — a failed connect must never leave a retrying client behind
       ...(env.PI_BOARD_RUNTIME_DIR !== undefined && env.PI_BOARD_RUNTIME_DIR !== ""
         ? { runtimeDir: env.PI_BOARD_RUNTIME_DIR }
@@ -99,6 +109,7 @@ export function buildBoardRuntime(env: NodeJS.ProcessEnv = process.env): BoardRu
   const rt: BoardRuntime = {
     room,
     observer,
+    aliasBase: config?.alias ?? "board",
     peer: null,
     peerStatus:
       room === undefined

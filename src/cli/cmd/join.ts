@@ -18,9 +18,12 @@ export async function cmdJoin(
     sayErr("join needs a room");
     return EXIT_USAGE;
   }
+  // default alias carries the room (board-muse, not a bare board) so the
+  // sender name says which board speaks; an explicit --alias wins
+  const alias = opts.alias ?? `board-${room}`.slice(0, 32);
   let peer;
   try {
-    peer = await connectBoardPeer({ room, observer: opts.observer, alias: opts.alias });
+    peer = await connectBoardPeer({ room, observer: opts.observer, alias });
   } catch (err) {
     sayErr(`join failed: ${err instanceof Error ? err.message : String(err)}`);
     return EXIT_ERROR;
