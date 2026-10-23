@@ -12,12 +12,14 @@
  * Exit codes: 0 ok · 1 error · 2 usage · 3 not_found (read --id) ·
  * 4 refused (observer / non-member write attempt).
  */
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { boardDir, BoardStore } from "../store/store.js";
 import { TypedBoard } from "../entries/board.js";
-import { ENTRY_TYPES, validateDraft, type EntryDraft } from "../entries/types.js";
+import { ENTRY_TYPES, isEntryType, validateDraft, type EntryDraft } from "../entries/types.js";
+import { loadLimits } from "../shared/limits.js";
 import { checkWriteGate, gateRefusalText } from "../mesh/gates.js";
 import { announceWrite, failSummaryLine, selectNewFails } from "../mesh/notify.js";
 import { connectBoardPeer } from "../mesh/peer.js";
@@ -79,7 +81,7 @@ function usage(out: NodeJS.WriteStream): void {
       "",
       "  piboard join <room> [--observer] [--alias NAME]   become the room's board presence",
       "  piboard watch                                      print new-FAIL boundary lines (local)",
-      "  piboard write --type T --text \"…\" [--detail-file -|PATH] [--ref R]",
+      "  piboard write --type T --text \"…\" [--detail-file -|PATH] [--ref R] [--lease-ref ID]",
       "  piboard read [--id ID] [--limit N]                 newest window, or one entry unfolded",
       "  piboard grep \"a,b&c\"                                boolean search (, = OR, & = AND)",
       "",
@@ -113,8 +115,23 @@ function parseFlags(args: string[]): { flags: Map<string, string | boolean>; pos
 function readDetailFile(value: string | boolean | undefined): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "string") usageError("--detail-file needs a path (or - for stdin)");
-  if (value === "-") return readFileSync(process.stdin.fd, "utf8");
-  return readFileSync(value, "utf8");
+  // Bounded read: the byte bound must apply at INGESTION, never after the
+  // whole stream has been loaded (DESIGN: never an unbounded blob).
+  const maxBytes = loadLimits().maxDetailChars;
+  const fd = value === "-" ? 0 : openSync(value, "r");
+  try {
+    const buf = Buffer.alloc(maxBytes + 1);
+    // stdin is a pipe: an explicit position forces a seek and throws
+    // ESPIPE — read from the current position there, from 0 on files.
+    const n = readSync(fd, buf, 0, maxBytes + 1, value === "-" ? null : 0);
+    if (n > maxBytes) {
+      process.stderr.write(`piboard: --detail-file exceeds the ${maxBytes}-byte bound — refusing (nothing was read past it)\n`);
+      process.exit(EXIT_ERROR);
+    }
+    return buf.subarray(0, n).toString("utf8");
+  } finally {
+    if (fd !== 0) closeSync(fd);
+  }
 }
 
 function usageError(message: string): never {
@@ -226,6 +243,17 @@ async function cmdWatch(): Promise<number> {
 }
 
 async function cmdWrite(flags: Map<string, string | boolean>): Promise<number> {
+  // Usage validation precedes state checks everywhere: a malformed
+  // invocation is a usage error whether or not a board has joined, and
+  // whether or not the role would refuse the write.
+  const type = flags.get("type");
+  const text = flags.get("text");
+  if (typeof type !== "string" || typeof text !== "string" || text === "") {
+    usageError("write needs --type and --text");
+  }
+  if (!isEntryType(type)) {
+    usageError(`--type must be one of ${ENTRY_TYPES.join("|")}, got: ${type}`);
+  }
   const role = readRole();
   if (role === undefined) {
     process.stderr.write("piboard: not joined — run `piboard join <room>` first (writes need a role)\n");
@@ -236,13 +264,9 @@ async function cmdWrite(flags: Map<string, string | boolean>): Promise<number> {
     process.stderr.write(`piboard: write refused (${gate.reason}): ${gateRefusalText(gate)}\n`);
     return EXIT_REFUSED;
   }
-  const type = flags.get("type");
-  const text = flags.get("text");
-  if (typeof type !== "string" || typeof text !== "string" || text === "") {
-    usageError("write needs --type and --text");
-  }
   const detail = readDetailFile(flags.get("detail-file"));
   const ref = flags.get("ref");
+  const leaseRef = flags.get("lease-ref");
   const board = TypedBoard.open(role.room);
   let draft: EntryDraft;
   try {
@@ -255,6 +279,7 @@ async function cmdWrite(flags: Map<string, string | boolean>): Promise<number> {
       text,
       ...(detail !== undefined ? { detail } : {}),
       ...(typeof ref === "string" ? { ref } : {}),
+      ...(typeof leaseRef === "string" && leaseRef !== "" ? { leaseRef } : {}),
     });
   } catch (err) {
     // validation is a usage problem (closed type set, shapes), not a crash

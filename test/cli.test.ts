@@ -194,7 +194,70 @@ describe("cli: member round-trip with the join daemon announcing", () => {
 
       const badType = await h.spawnCli(["write", "--type", "IDEA", "--text", "nope"]);
       assert.equal(badType.code, 2);
-      assert.match(badType.stderr, /entry_invalid.*type/);
+      assert.match(badType.stderr, /--type must be one of/);
+      await join.stop();
+    } finally {
+      await h.cleanup();
+    }
+  });
+});
+
+describe("cli: review-round hardening", () => {
+  it("usage validation precedes role/gate even on an observer board", async () => {
+    const h = await harness();
+    try {
+      const join = h.spawnBg(["join", "mesh", "--observer"]);
+      await join.waitLine(/joined mesh as board-test \(observer\)/);
+      await join.stop();
+      const noFlags = await h.spawnCli(["write"]);
+      assert.equal(noFlags.code, 2, "a malformed invocation is a usage error, not a refusal");
+      const noText = await h.spawnCli(["write", "--type", "FACT"]);
+      assert.equal(noText.code, 2);
+      const badType = await h.spawnCli(["write", "--type", "IDEA", "--text", "x"]);
+      assert.equal(badType.code, 2);
+      assert.match(badType.stderr, /--type must be one of/);
+      // A WELL-FORMED write on the observer board still refuses (exit 4).
+      const refused = await h.spawnCli(["write", "--type", "FACT", "--text", "nope"]);
+      assert.equal(refused.code, 4);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  it("--detail-file is a bounded read: past the byte bound it refuses at ingestion", async () => {
+    const h = await harness();
+    try {
+      const join = h.spawnBg(["join", "mesh"]);
+      await join.waitLine(/joined mesh as board-test \(member\)/);
+      const big = await h.spawnCli(["write", "--type", "FACT", "--text", "x", "--detail-file", "-"], {
+        stdin: "z".repeat(8_193),
+      });
+      assert.equal(big.code, 1);
+      assert.match(big.stderr, /exceeds the 8192-byte bound/);
+      const list = await h.spawnCli(["read"]);
+      assert.equal(list.stdout, "", "the refused write left no trace");
+      const ok = await h.spawnCli(["write", "--type", "FACT", "--text", "fine", "--detail-file", "-"], {
+        stdin: "z".repeat(100),
+      });
+      assert.equal(ok.code, 0);
+      await join.stop();
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  it("--lease-ref lands on the entry (CLAIM ↔ mesh_claim correlation)", async () => {
+    const h = await harness();
+    try {
+      const join = h.spawnBg(["join", "mesh"]);
+      await join.waitLine(/joined mesh as board-test \(member\)/);
+      const res = await h.spawnCli([
+        "write", "--type", "CLAIM", "--text", "owning the deploy lane", "--lease-ref", "task7#lz3#12:1",
+      ]);
+      assert.equal(res.code, 0);
+      const board = new TypedBoard(new (await import("../src/store/store.js")).BoardStore(boardDir("mesh", h.childEnv)));
+      const entry = board.readById("b1");
+      assert.equal(entry?.leaseRef, "task7#lz3#12:1");
       await join.stop();
     } finally {
       await h.cleanup();
