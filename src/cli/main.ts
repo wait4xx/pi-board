@@ -135,9 +135,22 @@ async function cmdJoin(positional: string[], flags: Map<string, string | boolean
     alias,
     observer,
   });
-  const role: RoleConfig = { room, alias, observer, watermarkMs: Date.now() };
+  // Resume, never replay: a restarted presence reuses its persisted
+  // watermark so entries announced before the restart are not re-broadcast;
+  // a FRESH join starts at now and announces nothing that already exists.
+  // Either way the operator sees the honest count of skipped entries.
+  const previous = readRole();
+  const resuming = previous !== undefined;
+  const watermarkMs = resuming ? previous.watermarkMs : Date.now();
+  const role: RoleConfig = { room, alias, observer, watermarkMs };
   writeRole(role);
-  process.stdout.write(`joined ${room} as ${peer.alias} (${observer ? "observer" : "member"})\n`);
+  const store = new BoardStore(boardDir(room));
+  const skipped = store.read().filter((entry) => Date.parse(entry.at) <= watermarkMs).length;
+  process.stdout.write(
+    `joined ${room} as ${peer.alias} (${observer ? "observer" : "member"}); ` +
+      `${resuming ? `resuming from ${new Date(watermarkMs).toISOString()}` : "fresh join (existing entries are not replayed)"}, ` +
+      `skipping ${skipped}${skipped >= 2000 ? "+" : ""} already-covered entries\n`,
+  );
 
   let running = true;
   const stop = (): void => {
@@ -146,20 +159,31 @@ async function cmdJoin(positional: string[], flags: Map<string, string | boolean
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
 
-  const store = new BoardStore(boardDir(room));
   while (running) {
     const fresh = store.read(50).filter((entry) => Date.parse(entry.at) > role.watermarkMs);
     for (const entry of fresh.reverse()) {
       // oldest first: the room reads the board's history in order
-      const result = await announceWrite(peer, {
-        id: entry.id,
-        type: entry.type as "OBSERVED" | "FACT" | "FAIL" | "CLAIM" | "PATCH_SUMMARY",
-        short: typeof entry.text === "string" ? entry.text : "",
-        at: entry.at,
-      });
-      process.stdout.write(
-        `announced ${entry.id} ${entry.type}${result.ok ? "" : ` (announce ${result.status}: ${result.reason ?? "?"})`}\n`,
-      );
+      let announced = false;
+      try {
+        const result = await announceWrite(peer, {
+          id: entry.id,
+          type: entry.type as "OBSERVED" | "FACT" | "FAIL" | "CLAIM" | "PATCH_SUMMARY",
+          short: typeof entry.text === "string" ? entry.text : "",
+          at: entry.at,
+        });
+        announced = result.ok;
+        process.stdout.write(
+          `announced ${entry.id} ${entry.type}${result.ok ? "" : ` (announce ${result.status}: ${result.reason ?? "?"})`}\n`,
+        );
+      } catch (err) {
+        // a throwing send must not kill the presence loop — retry next poll
+        process.stdout.write(`announced ${entry.id} ${entry.type} (announce error: ${err instanceof Error ? err.message : String(err)})\n`);
+      }
+      if (!announced) {
+        // do NOT advance past a failed entry: the watermark may only move
+        // over entries the room actually received — retry on the next poll
+        break;
+      }
       role.watermarkMs = Date.parse(entry.at);
       writeRole(role);
     }

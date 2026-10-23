@@ -166,6 +166,17 @@ async function main() {
     const r = cli(["grep", "smoke&falsified"], env);
     if (!/smoke falsified path X/.test(r.out)) throw new Error(`grep output missed the hit: ${r.out.slice(0, 200)}`);
   });
+  await step("exactly one broadcast frame for one write (no replays)", async () => {
+    // one write must cost the room exactly one frame — a watermark replay
+    // or announce retry would surface here as a second frame
+    await sleep(2_500); // a retry/replay rides the daemon's 1s poll loop
+    if (broadcastSeen.length !== 1) {
+      throw new Error(
+        `expected exactly 1 broadcast frame, saw ${broadcastSeen.length}: ` +
+          broadcastSeen.map((f) => JSON.stringify(f.body)).join(" | "),
+      );
+    }
+  });
   await step("observer join + write is refused with a readable reason", async () => {
     const obsEnv = { ...env, PI_BOARD_STATE_DIR: path.join(root, "obs-state") };
     mkdirSync(obsEnv.PI_BOARD_STATE_DIR, { recursive: true });
