@@ -9,12 +9,15 @@
  * reserved BEFORE the data write, so a crash between the two leaves a gap,
  * never a duplicate.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { FORBIDDEN_KEY_PATTERNS, loadLimits, type Limits } from "../shared/limits.js";
 
 const SEGMENT_GLOB = /^seg-(\d{6})\.jsonl$/;
+
+/** A lock holder older than this is a crashed writer — break its lock. */
+const APPEND_LOCK_STALE_MS = 10_000;
 
 /** Anything the board stores: an id, a timestamp, then caller fields. */
 export interface StoredEntry {
@@ -78,41 +81,96 @@ export class BoardStore {
    */
   append(draft: Record<string, unknown>): StoredEntry {
     this.scanForbiddenKeys(draft);
+    // Field caps are BYTE bounds (DESIGN says "8 KiB", not 8192 UTF-16 units).
     const text = draft["text"];
-    if (typeof text === "string" && text.length > this.limits.maxTextChars) {
-      throw new Error(`entry_too_long: text exceeds ${this.limits.maxTextChars} chars (got ${text.length})`);
+    if (typeof text === "string" && Buffer.byteLength(text, "utf8") > this.limits.maxTextChars) {
+      throw new Error(`entry_too_long: text exceeds ${this.limits.maxTextChars} bytes`);
     }
     const detail = draft["detail"];
-    if (typeof detail === "string" && detail.length > this.limits.maxDetailChars) {
-      throw new Error(`entry_too_long: detail exceeds ${this.limits.maxDetailChars} chars (got ${detail.length})`);
+    if (typeof detail === "string" && Buffer.byteLength(detail, "utf8") > this.limits.maxDetailChars) {
+      throw new Error(`entry_too_long: detail exceeds ${this.limits.maxDetailChars} bytes`);
     }
-    const line = `${JSON.stringify(draft)}\n`;
-    if (Buffer.byteLength(line) > this.limits.segmentMaxBytes) {
+    const draftLine = `${JSON.stringify(draft)}\n`;
+    if (Buffer.byteLength(draftLine) > this.limits.segmentMaxBytes) {
+      // Fast-fail on the draft line; the authoritative check below measures
+      // the FINAL line (id+at add ~40-60 bytes).
       throw new Error(`entry_too_large: single entry exceeds the segment bound (${this.limits.segmentMaxBytes} bytes)`);
     }
+    return this.withAppendLock(() => {
+      // Cross-process serialization: re-read the counter under the lock so
+      // concurrent CLI processes never both write b(N+1).
+      this.seq = this.loadMeta().seq;
+      const physical = this.physicalStats();
+      if (physical.entries + 1 > this.limits.maxEntries) {
+        throw new BoardFullError(
+          "maxEntries",
+          `board_full: ${physical.entries} entries on disk, cap ${this.limits.maxEntries} — append refused (never silently evicted)`,
+        );
+      }
 
-    const physical = this.physicalStats();
-    if (physical.entries + 1 > this.limits.maxEntries) {
-      throw new BoardFullError(
-        "maxEntries",
-        `board_full: ${physical.entries} entries on disk, cap ${this.limits.maxEntries} — append refused (never silently evicted)`,
-      );
+      // Build the FINAL line, then measure every byte bound against it.
+      const entry: StoredEntry = {
+        ...draft,
+        id: `b${(this.seq + 1).toString(36)}`,
+        at: new Date(this.now()).toISOString(),
+      };
+      const finalLine = `${JSON.stringify(entry)}\n`;
+      const finalBytes = Buffer.byteLength(finalLine);
+      if (finalBytes > this.limits.segmentMaxBytes) {
+        throw new Error(`entry_too_large: single entry exceeds the segment bound (${this.limits.segmentMaxBytes} bytes)`);
+      }
+      if (physical.bytes + finalBytes > this.limits.maxTotalBytes) {
+        throw new BoardFullError(
+          "maxTotalBytes",
+          `board_full: ${physical.bytes} bytes on disk, cap ${this.limits.maxTotalBytes} — append refused (never silently evicted)`,
+        );
+      }
+
+      // Persist the reservation BEFORE the data write: a crash between the
+      // two leaves a harmless id gap, never a duplicate after reopen. A
+      // refusal above simply never persists — the id is reused cleanly.
+      this.seq += 1;
+      this.saveMeta();
+      appendFileSync(this.targetSegmentPath(finalBytes), finalLine, "utf8");
+      return entry;
+    });
+  }
+
+  /**
+   * Serialize appends across processes with an O_EXCL lockfile. A crash
+   * while holding it leaves a stale file; a holder older than the stale
+   * bound is broken (the write either landed or never happened — meta is
+   * tmp+rename atomic, so breaking cannot corrupt the table).
+   */
+  private withAppendLock<T>(fn: () => T): T {
+    const lockPath = join(this.dir, "append.lock");
+    for (;;) {
+      let fd: number | undefined;
+      try {
+        fd = openSync(lockPath, "wx", 0o600);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+        try {
+          if (Date.now() - statSync(lockPath).mtimeMs > APPEND_LOCK_STALE_MS) {
+            unlinkSync(lockPath);
+          }
+        } catch {
+          // raced away or unreadable — the retry loop handles both
+        }
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+        continue;
+      }
+      try {
+        return fn();
+      } finally {
+        closeSync(fd);
+        try {
+          unlinkSync(lockPath);
+        } catch {
+          // best effort
+        }
+      }
     }
-    if (physical.bytes + Buffer.byteLength(line) > this.limits.maxTotalBytes) {
-      throw new BoardFullError(
-        "maxTotalBytes",
-        `board_full: ${physical.bytes} bytes on disk, cap ${this.limits.maxTotalBytes} — append refused (never silently evicted)`,
-      );
-    }
-
-    // Reserve the id first: a crash after this point leaves a gap in the
-    // sequence, never a reused id after reopen.
-    this.seq += 1;
-    this.saveMeta();
-    const entry: StoredEntry = { ...draft, id: `b${this.seq.toString(36)}`, at: new Date(this.now()).toISOString() };
-
-    appendFileSync(this.targetSegmentPath(Buffer.byteLength(line)), `${JSON.stringify(entry)}\n`, "utf8");
-    return entry;
   }
 
   /**
@@ -135,9 +193,19 @@ export class BoardStore {
       for (const name of names) {
         if (name === lastName) continue;
         const path = join(this.dir, "segments", name);
-        const lines = readFileSync(path, "utf8").trimEnd().split("\n");
-        const last = JSON.parse(lines[lines.length - 1] ?? "{}") as { at?: string };
-        if (last.at !== undefined && this.isExpired(last.at)) {
+        let lastAt: string | undefined;
+        try {
+          const lines = readFileSync(path, "utf8").trimEnd().split("\n");
+          lastAt = (JSON.parse(lines[lines.length - 1] ?? "{}") as { at?: string }).at;
+        } catch {
+          // A torn tail line (crash mid-append) is unparseable: treat the
+          // segment as NOT fully expired and move on. Query-side TTL
+          // filtering already hides expired entries; pruning must never
+          // become a write-path failure that outlives the crash (a parse
+          // throw here would refuse every future rotation-triggering append).
+          continue;
+        }
+        if (lastAt !== undefined && this.isExpired(lastAt)) {
           try {
             unlinkSync(path);
           } catch {
@@ -252,7 +320,12 @@ export class BoardStore {
    * could not prove clean.
    */
   private scanForbiddenKeys(value: unknown, seen = 0): void {
-    if (seen > 8) return; // depth guard: deeper structure is not text we scan
+    if (seen > 8) {
+      // Fail-closed, literally: a structure too deep to scan is refused,
+      // not silently passed (the board never persists what it could not
+      // prove clean).
+      throw new Error("entry_invalid: nesting deeper than 8 levels cannot be scanned — refusing");
+    }
     if (typeof value === "string") {
       for (let i = 0; i < FORBIDDEN_KEY_PATTERNS.length; i += 1) {
         if (FORBIDDEN_KEY_PATTERNS[i]!.test(value)) throw new ForbiddenKeyError(i);

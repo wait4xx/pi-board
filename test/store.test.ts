@@ -2,9 +2,11 @@
 // that refuse (never evict), TTL visibility, fail-closed forbidden keys,
 // and the env-override discipline. Real files in mkdtemp dirs, no mocks.
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, it } from "node:test";
 import { BoardFullError, BoardStore, ForbiddenKeyError } from "../src/store/store.js";
 import { loadLimits } from "../src/shared/limits.js";
@@ -199,6 +201,94 @@ describe("store: field caps are enforced before any write", () => {
       assert.throws(() => s.append({ text: "x".repeat(281) }), /entry_too_long.*text/);
       assert.throws(() => s.append({ text: "ok", detail: "y".repeat(8_193) }), /entry_too_long.*detail/);
       assert.equal(s.read().length, 0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it("caps are BYTE bounds: 279 CJK chars are 837 bytes and refuse", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-board-bytes-"));
+    try {
+      const s = store(dir);
+      assert.equal("汉".repeat(279).length, 279, "chars");
+      assert.throws(() => s.append({ text: "汉".repeat(279) }), /entry_too_long.*text/);
+      assert.equal(s.read().length, 0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it("unscannable deep nesting is refused, not silently passed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-board-depth-"));
+    try {
+      const s = store(dir);
+      let deep: Record<string, unknown> = { text: "bottom" };
+      for (let i = 0; i < 12; i += 1) deep = { nested: deep };
+      assert.throws(() => s.append(deep), /nesting deeper than 8/);
+      assert.equal(s.read().length, 0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+});
+
+describe("store: review-round hardening", () => {
+  it("a torn tail line in an old segment never breaks the write path (prune skips it)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-board-torn-"));
+    try {
+      let clock = 1_000_000;
+      const s = store(dir, { PI_BOARD_SEGMENT_MAX_ENTRIES: "1", PI_BOARD_ENTRY_TTL_MS: "50" }, () => clock);
+      s.append({ text: "first" }); // seg-000001
+      s.append({ text: "second" }); // rotate → seg-000002
+      // Simulate a crash mid-append on a THIRD segment: torn partial line.
+      writeFileSync(join(dir, "segments", "seg-000003.jsonl"), '{"id":"bX","at":"2026-01', { flag: "a" });
+      clock += 100; // seg1/seg2 fully expire
+      const third = s.append({ text: "third" }); // rotate → prune walks all old segments
+      assert.equal(third.id.startsWith("b"), true, "the write path survives the torn segment");
+      const names = readdirSync(join(dir, "segments")).sort();
+      // Prune removed the fully-expired segments but SKIPPED the torn one
+      // (unparseable tail ≠ proven expired — it stays, invisible to queries).
+      assert.equal(names.includes("seg-000001.jsonl"), false, "expired segment pruned");
+      assert.equal(names.includes("seg-000002.jsonl"), false, "expired segment pruned");
+      assert.equal(names.includes("seg-000003.jsonl"), true, "torn segment skipped by prune, not crashed on");
+      assert.equal(s.read().some((entry) => entry.id === third.id), true);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it("concurrent processes serialize on the append lock: ids stay unique", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-board-lock-"));
+    const url = pathToFileURL(join(process.cwd(), "dist/src/store/store.js")).href;
+    const childCode = `
+      import { BoardStore } from ${JSON.stringify(url)};
+      import { loadLimits } from ${JSON.stringify(pathToFileURL(join(process.cwd(), "dist/src/shared/limits.js")).href)};
+      const store = new BoardStore(process.argv[2], { limits: loadLimits({}) });
+      for (let i = 0; i < 15; i += 1) store.append({ text: "from-" + process.pid });
+    `;
+    try {
+      const children = [0, 1, 2].map(() =>
+        spawn(process.execPath, ["--input-type=module", "-e", childCode, "arg0", dir], { stdio: "ignore" }),
+      );
+      const codes = await Promise.all(children.map((child) => new Promise<number>((resolve) => child.on("close", (code) => resolve(code ?? -1)))));
+      assert.deepEqual(codes, [0, 0, 0], "all three writers must succeed");
+      const s = store(dir);
+      const ids = s.read().map((entry) => entry.id);
+      assert.equal(ids.length, 45);
+      assert.equal(new Set(ids).size, 45, "no duplicate ids across processes");
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it("byte caps measure the FINAL line, not the id-less draft", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-board-finaline-"));
+    try {
+      // Draft line for this entry is ~70 bytes; the final line adds id+at
+      // (~50 more). A cap that only fits the draft must refuse the append.
+      const s = store(dir, { PI_BOARD_MAX_TOTAL_BYTES: "110", PI_BOARD_SEGMENT_MAX_BYTES: "110" });
+      assert.throws(() => s.append({ text: "0123456789".repeat(6) }), /board_full|entry_too_large/);
+      assert.equal(s.physicalStats().entries, 0);
     } finally {
       cleanup(dir);
     }
