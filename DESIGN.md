@@ -41,7 +41,11 @@ is room-ready so no migration is owed later.
 **Append-only JSONL segments.** One line per entry; segments are immutable
 once rotated (`seg-000001.jsonl`, …); only the newest segment is written.
 Rotation triggers on either bound: `SEGMENT_MAX_ENTRIES` (10 000) or
-`SEGMENT_MAX_BYTES` (1 MiB). Rotated segments stay greppable.
+`SEGMENT_MAX_BYTES` (1 MiB). Rotated segments stay greppable — grep
+scans the FULL TTL-visible span (the read window is a presentation
+bound for `read`, never a search boundary); every byte cap measures the
+final stored line, and appends serialize across processes through an
+O_EXCL lockfile so ids stay unique.
 
 **Global caps refuse, never evict.** `MAX_ENTRIES` (50 000) and
 `MAX_TOTAL_BYTES` (32 MiB): an append past a cap is REFUSED with an honest
