@@ -39,4 +39,39 @@ if (files.length === 0) {
 }
 
 const res = spawnSync(process.execPath, ["--test", ...files], { stdio: "inherit" });
+reapOrphanTestBrokers();
 process.exit(res.status ?? 1);
+
+/** Safety net (external review, PR #2): a client connecting to a runtime dir
+ *  with no listening broker AUTO-SPAWNS one (pi-mesh ensureBroker) — a leaked
+ *  client or a post-teardown retry can therefore leave orphan broker
+ *  processes behind, one per tmp dir. The tests themselves are hermetic
+ *  (in-process brokers, noReconnect single-shot attaches); this reaps
+ *  anything that still escaped, matching ONLY brokers spawned from THIS
+ *  repo's node_modules copy — a real mesh broker runs a different install
+ *  path and is never touched. POSIX only; visible skip on Windows. */
+function reapOrphanTestBrokers() {
+  const entry = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "node_modules",
+    "pi-mesh-extension",
+    "dist",
+    "src",
+    "broker",
+    "broker.js",
+  );
+  if (!existsSync(entry)) return; // no mesh peer installed — nothing to reap
+  if (process.platform === "win32") {
+    console.log("note: orphan-broker reap skipped on Windows (no pgrep/pkill)");
+    return;
+  }
+  const listed = spawnSync("pgrep", ["-f", entry], { encoding: "utf8" });
+  const pids = (listed.stdout ?? "")
+    .split("\n")
+    .map((s) => s.trim())
+    .filter((s) => s !== "" && s !== String(process.pid));
+  if (pids.length === 0) return;
+  spawnSync("pkill", ["-f", entry]);
+  console.log(`reaped ${pids.length} orphan test broker(s) — review follow-up (leaked clients used to auto-spawn brokers via ensureBroker)`);
+}
