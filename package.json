@@ -25,7 +25,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node scripts/run-tests.mjs",
-    "smoke": "node scripts/piboard-smoke.mjs"
+    "smoke": "node scripts/piboard-smoke.mjs",
+    "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
     "pi-mesh-extension": "*"
