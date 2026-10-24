@@ -221,6 +221,29 @@ describe("cli: pick round 1 (PR#1 comparison)", () => {
     }
   });
 
+  it("grep --type/--limit flags: filter, cap, and honest usage errors", async () => {
+    const h = await harness();
+    try {
+      const join = h.spawnBg(["join", "mesh"]);
+      await join.waitLine(/joined mesh as board-test \(member\)/);
+      await h.spawnCli(["write", "--type", "FAIL", "--text", "probe timeout"]);
+      await h.spawnCli(["write", "--type", "FACT", "--text", "timeout is by design"]);
+      const filtered = await h.spawnCli(["grep", "timeout", "--type", "FAIL"]);
+      assert.equal(filtered.code, 0);
+      assert.match(filtered.stdout, /b1 FAIL/);
+      assert.equal(filtered.stdout.includes("FACT"), false);
+      const capped = await h.spawnCli(["grep", "timeout", "--limit", "1"]);
+      assert.equal(capped.stdout.trim().split("\n").length, 1);
+      const badType = await h.spawnCli(["grep", "timeout", "--type", "IDEA"]);
+      assert.equal(badType.code, 2);
+      const badLimit = await h.spawnCli(["grep", "timeout", "--limit", "0"]);
+      assert.equal(badLimit.code, 2);
+      await join.stop();
+    } finally {
+      await h.cleanup();
+    }
+  });
+
   it("an interactive terminal is refused for --detail-file - instead of hanging", async () => {
     const { stdinDetailGuard } = await import("../src/cli/main.js");
     assert.match(stdinDetailGuard(true) ?? "", /refuses an interactive terminal/);

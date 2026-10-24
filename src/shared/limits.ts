@@ -19,6 +19,7 @@ export const MAX_TEXT_CHARS = 280;
 export const MAX_DETAIL_CHARS = 8_192;
 export const READ_WINDOW_DEFAULT = 2_000;
 export const READ_WINDOW_MAX = 10_000;
+export const GREP_LIMIT_DEFAULT = 50;
 
 /**
  * Secret shapes that must never be persisted. The pi-mesh ledger pattern
@@ -43,6 +44,7 @@ export interface Limits {
   maxDetailChars: number;
   readWindowDefault: number;
   readWindowMax: number;
+  grepLimitDefault: number;
 }
 
 function positiveInt(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
@@ -67,6 +69,7 @@ export function loadLimits(env: NodeJS.ProcessEnv = process.env): Limits {
     maxDetailChars: positiveInt(env, "PI_BOARD_MAX_DETAIL_CHARS", MAX_DETAIL_CHARS),
     readWindowDefault: positiveInt(env, "PI_BOARD_READ_WINDOW_DEFAULT", READ_WINDOW_DEFAULT),
     readWindowMax: positiveInt(env, "PI_BOARD_READ_WINDOW_MAX", READ_WINDOW_MAX),
+    grepLimitDefault: positiveInt(env, "PI_BOARD_GREP_LIMIT_DEFAULT", GREP_LIMIT_DEFAULT),
   };
   if (limits.readWindowDefault > limits.readWindowMax) {
     throw new Error(

@@ -174,6 +174,22 @@ describe("entries: boolean grep truth table", () => {
     }
   });
 
+  it("grep opts: --type filters, limit caps, both composable", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-board-grepopt-"));
+    try {
+      const b = board(dir);
+      b.write({ type: "FAIL", author: "a", room: "mesh", text: "timeout on probe" });
+      b.write({ type: "FACT", author: "a", room: "mesh", text: "timeout is 3s by design" });
+      b.write({ type: "FAIL", author: "a", room: "mesh", text: "timeout on drain" });
+      assert.deepEqual(b.grep("timeout", { type: "FAIL" }).map((r) => r.entry.id), ["b3", "b1"]);
+      assert.equal(b.grep("timeout").length, 3);
+      assert.equal(b.grep("timeout", { limit: 1 }).length, 1);
+      assert.deepEqual(b.grep("timeout", { type: "FACT", limit: 5 }).map((r) => r.entry.id), ["b2"]);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
   it("a miss is an honest empty list, and a term-less query is a usage error", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-board-miss-"));
     try {

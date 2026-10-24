@@ -5,7 +5,7 @@
  * over text and detail; a miss is an honest empty list).
  */
 import { BoardStore, boardDir, type StoreOptions } from "../store/store.js";
-import { validateDraft, type Entry, type EntryDraft } from "./types.js";
+import { validateDraft, type Entry, type EntryDraft, type EntryType } from "./types.js";
 
 /** One grep row: always carries the id; `(in detail)` marks rows whose
  *  match relied on detail (gate review b) — `read --id` is the follow-up. */
@@ -47,7 +47,7 @@ export class TypedBoard {
    * `detail`. A miss returns []; a row that matched only through detail is
    * marked so a summary line that hides the match never confuses.
    */
-  grep(query: string): GrepRow[] {
+  grep(query: string, opts: { limit?: number; type?: EntryType } = {}): GrepRow[] {
     const groups = query
       .split(",")
       .map((group) => group.split("&").map((term) => term.trim().toLowerCase()))
@@ -71,7 +71,9 @@ export class TypedBoard {
         else matchedViaDetail = true;
       }
       if (!matchedTextOnly && !matchedViaDetail) continue;
+      if (opts.type !== undefined && entry.type !== opts.type) continue;
       rows.push({ entry, matchedInDetail: !matchedTextOnly && matchedViaDetail });
+      if (rows.length >= (opts.limit ?? this.store.limits.grepLimitDefault)) break;
     }
     return rows;
   }

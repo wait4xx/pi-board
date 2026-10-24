@@ -359,11 +359,20 @@ async function cmdRead(flags: Map<string, string | boolean>): Promise<number> {
   return EXIT_OK;
 }
 
-async function cmdGrep(positional: string[]): Promise<number> {
+async function cmdGrep(positional: string[], flags: Map<string, string | boolean>): Promise<number> {
   // Usage validation before state checks: a malformed invocation is a
   // usage error whether or not a board has joined.
   const query = positional[0];
   if (query === undefined || query === "") usageError("grep needs a query: piboard grep \"a,b&c\"");
+  const typeFlag = flags.get("type");
+  if (typeFlag !== undefined && (typeof typeFlag !== "string" || !isEntryType(typeFlag))) {
+    usageError(`--type must be one of ${ENTRY_TYPES.join("|")}, got: ${String(typeFlag)}`);
+  }
+  const limitFlag = flags.get("limit");
+  if (limitFlag !== undefined && (typeof limitFlag !== "string" || !/^\d+$/.test(limitFlag) || Number.parseInt(limitFlag, 10) <= 0)) {
+    usageError("--limit needs a positive integer");
+  }
+  const limit = typeof limitFlag === "string" ? Number.parseInt(limitFlag, 10) : undefined;
   const got = requireRole();
   if (!got.ok) {
     if (got.code === EXIT_ERROR) {
@@ -375,7 +384,10 @@ async function cmdGrep(positional: string[]): Promise<number> {
   const board = TypedBoard.open(role.room);
   let rows;
   try {
-    rows = board.grep(query);
+    rows = board.grep(query, {
+      ...(limit !== undefined ? { limit } : {}),
+      ...(typeof typeFlag === "string" ? { type: typeFlag } : {}),
+    });
   } catch (err) {
     usageError(err instanceof Error ? err.message : "invalid query");
   }
@@ -400,7 +412,7 @@ export async function runCli(argv: string[]): Promise<number> {
     case "read":
       return cmdRead(flags);
     case "grep":
-      return cmdGrep(positional);
+      return cmdGrep(positional, flags);
     case undefined:
     case "--help":
     case "help":
