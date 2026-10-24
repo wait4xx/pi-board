@@ -10,6 +10,7 @@ import { PEER_MISSING_MESSAGE, loadMesh } from "../src/mesh/deps.js";
 
 interface Ctx {
   root: string;
+  runtimeDir: string;
   socketPath: string;
   broker: { close: () => Promise<void> };
   peers: BoardPeer[];
@@ -37,6 +38,7 @@ async function withCtx(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
   const peers: BoardPeer[] = [];
   const ctx: Ctx = {
     root,
+    runtimeDir,
     socketPath: path.join(runtimeDir, "broker.sock"),
     broker,
     peers,
@@ -71,12 +73,12 @@ async function waitUntil(fn: () => Promise<boolean>, timeoutMs = 8_000): Promise
 
 describe("task_0005: board peer join", () => {
   it("joins as a member: alias defaults to 'board', room at hello, writes pass", async () => {
-    await withCtx(async ({ peers }) => {
-      const board = await connectBoardPeer({ room: "boardroom" });
+    await withCtx(async ({ peers, runtimeDir }) => {
+      const board = await connectBoardPeer({  room: "boardroom", runtimeDir });
       peers.push(board);
       // a broadcast needs another room member to land on (the broker refuses
       // a room of one with peer_not_found — honest, not a board bug)
-      const other = await connectBoardPeer({ room: "boardroom", alias: "board-mate" });
+      const other = await connectBoardPeer({  room: "boardroom", alias: "board-mate", runtimeDir });
       peers.push(other);
       assert.equal(board.alias, "board");
       assert.equal(board.observer, false);
@@ -91,14 +93,14 @@ describe("task_0005: board peer join", () => {
   });
 
   it("honors PI_BOARD_ALIAS and an explicit alias", async () => {
-    await withCtx(async ({ peers }) => {
+    await withCtx(async ({ peers, runtimeDir }) => {
       const saved = process.env.PI_BOARD_ALIAS;
       try {
         process.env.PI_BOARD_ALIAS = "envboard";
-        const viaEnv = await connectBoardPeer({ room: "boardroom" });
+        const viaEnv = await connectBoardPeer({  room: "boardroom", runtimeDir });
         peers.push(viaEnv);
         assert.equal(viaEnv.alias, "envboard");
-        const explicit = await connectBoardPeer({ room: "boardroom", alias: "explicit-board" });
+        const explicit = await connectBoardPeer({  room: "boardroom", alias: "explicit-board", runtimeDir });
         peers.push(explicit);
         assert.equal(explicit.alias, "explicit-board");
       } finally {
@@ -109,8 +111,8 @@ describe("task_0005: board peer join", () => {
   });
 
   it("observer identity is real at the broker: writes refused observer_readonly", async () => {
-    await withCtx(async ({ peers }) => {
-      const obs = await connectBoardPeer({ room: "boardroom", observer: true });
+    await withCtx(async ({ peers, runtimeDir }) => {
+      const obs = await connectBoardPeer({  room: "boardroom", observer: true, runtimeDir });
       peers.push(obs);
       assert.equal(obs.observer, true);
       const res = await obs.client.send({
@@ -124,10 +126,10 @@ describe("task_0005: board peer join", () => {
   });
 
   it("reconnect: a member peer rejoins and keeps receiving broadcasts", async () => {
-    await withCtx(async ({ peers }) => {
-      const board = await connectBoardPeer({ room: "boardroom" });
+    await withCtx(async ({ peers, runtimeDir }) => {
+      const board = await connectBoardPeer({  room: "boardroom", runtimeDir });
       peers.push(board);
-      const watcher = await connectBoardPeer({ room: "boardroom", alias: "board-watch" });
+      const watcher = await connectBoardPeer({  room: "boardroom", alias: "board-watch", runtimeDir });
       peers.push(watcher);
       killSocket(board);
       const back = await waitUntil(async () => {
@@ -141,8 +143,8 @@ describe("task_0005: board peer join", () => {
   });
 
   it("reconnect: an observer peer re-asserts the read-only role (the ctl bug class)", async () => {
-    await withCtx(async ({ peers }) => {
-      const obs = await connectBoardPeer({ room: "boardroom", observer: true, alias: "board-obs" });
+    await withCtx(async ({ peers, runtimeDir }) => {
+      const obs = await connectBoardPeer({  room: "boardroom", observer: true, alias: "board-obs", runtimeDir });
       peers.push(obs);
       killSocket(obs);
       // after the automatic re-hello the peer is member again at the broker
@@ -168,11 +170,11 @@ describe("task_0005: board peer join", () => {
   });
 
   it("strictAlias: a second board with the same alias is an honest error", async () => {
-    await withCtx(async ({ peers }) => {
-      const first = await connectBoardPeer({ room: "boardroom" });
+    await withCtx(async ({ peers, runtimeDir }) => {
+      const first = await connectBoardPeer({  room: "boardroom", runtimeDir });
       peers.push(first);
       await assert.rejects(
-        () => connectBoardPeer({ room: "boardroom" }),
+        () => connectBoardPeer({  room: "boardroom", runtimeDir }),
         (err: unknown) => err instanceof Error && /alias_taken|alias/i.test(err.message),
       );
     });
