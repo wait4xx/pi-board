@@ -76,6 +76,29 @@ function requireRole(notJoinedWording: string): { ok: true; role: RoleConfig } |
   return { ok: false, code: EXIT_ERROR };
 }
 
+/**
+ * Room resolution for the read-only commands: --room flag >
+ * $PI_BOARD_ROOM > the joined config. A room that does not come from the
+ * joined config is a STORE-ONLY operation — reads need no role and touch
+ * no gate; writes keep their join requirement (the role gate's premise,
+ * DESIGN §6 erratum). A corrupt config errors even with --room: an
+ * untrustworthy config must never be silently bypassed.
+ */
+function resolveReadRoom(values: Map<string, string>): { ok: true; room: string } | { ok: false; code: number } {
+  const read = readRole();
+  if (read.state === "corrupt") {
+    process.stderr.write(`piboard: board config unreadable (${read.path}): ${read.problem} — fix or remove it\n`);
+    return { ok: false, code: EXIT_USAGE };
+  }
+  const fromFlag = values.get("room");
+  if (fromFlag !== undefined && fromFlag !== "") return { ok: true, room: fromFlag };
+  const fromEnv = process.env.PI_BOARD_ROOM;
+  if (fromEnv !== undefined && fromEnv !== "") return { ok: true, room: fromEnv };
+  if (read.state === "valid") return { ok: true, room: read.role.room };
+  process.stderr.write("piboard: no room — use --room, set $PI_BOARD_ROOM, or run `piboard join <room>` first\n");
+  return { ok: false, code: EXIT_ERROR };
+}
+
 function writeRole(role: RoleConfig): void {
   const target = rolePath();
   const tmp = `${target}.${process.pid}.tmp`;
@@ -101,10 +124,12 @@ const WRITE_SPECS: ArgSpec[] = [
 const READ_SPECS: ArgSpec[] = [
   { name: "id", kind: "value", meta: "ID", help: "unfold this entry's detail" },
   { name: "limit", kind: "value", meta: "N", help: "window size (capped by the configured max)" },
+  { name: "room", kind: "value", meta: "ROOM", help: "read this room's board without a joined role (store-only)" },
 ];
 const GREP_SPECS: ArgSpec[] = [
   { name: "type", kind: "value", meta: "T", help: "filter by entry type" },
   { name: "limit", kind: "value", meta: "N", help: `max rows (default ${loadLimits().grepLimitDefault}, env-tunable)` },
+  { name: "room", kind: "value", meta: "ROOM", help: "search this room's board without a joined role (store-only)" },
 ];
 const WATCH_SPECS: ArgSpec[] = [];
 
@@ -117,7 +142,7 @@ interface CommandEntry {
 const COMMANDS = new Map<string, CommandEntry>([
   ["join", { usage: "usage: piboard join <room> [--observer] [--alias A]", specs: JOIN_SPECS, run: (p) => cmdJoin(p) }],
   ["write", { usage: 'usage: piboard write --type T --text "…" [--detail-file -|PATH] [--ref R] [--lease-ref L]', specs: WRITE_SPECS, run: (p) => cmdWrite(p) }],
-  ["read", { usage: "usage: piboard read [--id ID] [--limit N]", specs: READ_SPECS, run: (p) => cmdRead(p) }],
+  ["read", { usage: "usage: piboard read [--id ID] [--limit N] [--room ROOM]", specs: READ_SPECS, run: (p) => cmdRead(p) }],
   ["grep", { usage: 'usage: piboard grep "a,b&c" [--type T] [--limit N]  (, = OR, & = AND, ci)', specs: GREP_SPECS, run: (p) => cmdGrep(p) }],
   ["watch", { usage: "usage: piboard watch  (prints new FAIL lines at each boundary until stopped)", specs: WATCH_SPECS, run: () => cmdWatch() }],
 ]);
@@ -347,10 +372,9 @@ async function cmdWrite(parsed: ParsedArgs): Promise<number> {
 
 async function cmdRead(parsed: ParsedArgs): Promise<number> {
   if (parsed.positionals.length > 0) return commandUsageError("read", "read takes no positional arguments");
-  const got = requireRole("not joined — run `piboard join <room>` first");
-  if (!got.ok) return got.code;
-  const role = got.role;
-  const board = TypedBoard.open(role.room);
+  const room = resolveReadRoom(parsed.values);
+  if (!room.ok) return room.code;
+  const board = TypedBoard.open(room.room);
   const id = parsed.values.get("id");
   if (id !== undefined && id !== "") {
     const entry = board.readById(id);
@@ -388,10 +412,9 @@ async function cmdGrep(parsed: ParsedArgs): Promise<number> {
     return commandUsageError("grep", "--limit needs a positive integer");
   }
   const limit = limitFlag !== undefined ? Number.parseInt(limitFlag, 10) : undefined;
-  const got = requireRole("not joined — run `piboard join <room>` first");
-  if (!got.ok) return got.code;
-  const role = got.role;
-  const board = TypedBoard.open(role.room);
+  const room = resolveReadRoom(parsed.values);
+  if (!room.ok) return room.code;
+  const board = TypedBoard.open(room.room);
   let rows;
   try {
     rows = board.grep(query, {

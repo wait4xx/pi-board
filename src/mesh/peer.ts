@@ -24,6 +24,10 @@ export interface BoardPeerOpts {
   observer?: boolean;
   /** Broker runtime dir override (tests / multi-broker setups). */
   runtimeDir?: string;
+  /** Single-shot connection: no auto-reconnect (the extension's bounded
+   *  attach — a failed connect must never leave a retrying client
+   *  behind; recovery is the explicit ensurePeer hook). */
+  noReconnect?: boolean;
 }
 
 export interface BoardPeer {
@@ -49,6 +53,7 @@ export async function connectBoardPeer(opts: BoardPeerOpts): Promise<BoardPeer> 
     alias,
     rooms: [opts.room],
     strictAlias: true,
+    ...(opts.noReconnect === true ? { noReconnect: true } : {}),
     ...(opts.runtimeDir !== undefined ? { runtimeDir: opts.runtimeDir } : {}),
     config: {},
   });
