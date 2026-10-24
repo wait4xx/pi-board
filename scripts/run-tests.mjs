@@ -39,13 +39,21 @@ if (files.length === 0) {
   process.exit(1);
 }
 
+// A suite that never ends (a leaked handle — a peer nobody closed, an
+// un-unref'd timer) must fail LOUDLY here, not hang CI until the job
+// timeout. Generous: the full suite needs well under two minutes.
+const SUITE_TIMEOUT_MS = 5 * 60_000;
 const res = spawnSync(process.execPath, ["--test", ...files], {
   stdio: "inherit",
+  timeout: SUITE_TIMEOUT_MS,
   // Spawn-proof the suite (pi-mesh ≥ 0.10.1): a client facing a missing
   // broker fails fast instead of auto-spawning one — a leaked test broker
   // must never outlive the run. Scoped to the test env only.
   env: { ...process.env, MESH_NO_AUTO_BROKER: "1" },
 });
+if (res.signal === "SIGTERM" && res.status === null) {
+  console.error(`run-tests: SUITE TIMEOUT after ${SUITE_TIMEOUT_MS}ms — a leaked handle kept the process alive`);
+}
 reapOrphanTestBrokers();
 process.exit(res.status ?? 1);
 

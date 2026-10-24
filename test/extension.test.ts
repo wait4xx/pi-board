@@ -91,7 +91,12 @@ function toolsOf(rt: BoardRuntime | null): Map<string, ToolDefinition> {
     },
   } as unknown as ExtensionAPI;
   boardExtension(pi, rt !== null ? { runtime: () => rt } : {});
-  handlers.get("session_start")?.(); // fire it — the injected runtime goes live
+  // Fire session_start ONLY for an injected runtime. With rt === null the
+  // handler would build a REAL runtime from process.env — on a machine with
+  // a joined board config that attaches a live peer to the real mesh which
+  // nothing closes: a handle leak that hangs the test process (and pollutes
+  // the mesh). The null case asserts PRE-START registration — no start.
+  if (rt !== null) handlers.get("session_start")?.();
   return tools;
 }
 
@@ -225,6 +230,64 @@ describe("native extension: no-spawn + F5 recovery", () => {
     const status = await settle(rt);
     assert.match(status, /store-only/);
     assert.equal(existsSync(path.join(ctx.runDir, "broker.sock")), false, "a broker socket appeared!");
+  });
+
+  it("session lifecycle: shutdown closes the auto-joined peer (no leaked handles)", async (t) => {
+    const ctx = await withCtx(async (c) => {
+      await spawnBroker(c);
+      await addMate(c, "mate");
+    });
+    t.after(() => ctx.cleanup());
+    // drive the REAL entrypoint lifecycle in production shape (runtime from
+    // process.env, scoped to this test's broker). A discarded runtime that
+    // leaves a live peer hangs the process — the leak this test guards was
+    // real on any machine with a joined board config + live broker.
+    const handlers = new Map<string, () => void>();
+    const pi = {
+      registerTool: () => {},
+      on: (event: string, fn: () => void) => handlers.set(event, fn),
+    } as unknown as ExtensionAPI;
+    const saved: [string, string | undefined][] = [
+      ["PI_BOARD_STATE_DIR", process.env.PI_BOARD_STATE_DIR],
+      ["MESH_RUNTIME_DIR", process.env.MESH_RUNTIME_DIR],
+      ["PI_BOARD_ROOM", process.env.PI_BOARD_ROOM],
+    ];
+    process.env.PI_BOARD_STATE_DIR = ctx.stateDir;
+    process.env.MESH_RUNTIME_DIR = ctx.runDir;
+    process.env.PI_BOARD_ROOM = ROOM;
+    const mate = ctx.mates[0] as unknown as { status(): Promise<{ peers?: { alias?: string }[] }> };
+    const boardPeerPresent = async (): Promise<boolean> => {
+      const snap = await mate.status();
+      return (snap.peers ?? []).some((p) => (p.alias ?? "").startsWith(`board-${ROOM}`));
+    };
+    try {
+      boardExtension(pi, {});
+      handlers.get("session_start")?.();
+      const joined = await (async () => {
+        const deadline = Date.now() + 5_000;
+        while (Date.now() < deadline) {
+          if (await boardPeerPresent()) return true;
+          await sleep(100);
+        }
+        return false;
+      })();
+      assert.ok(joined, "auto-join peer never appeared in the room snapshot");
+      handlers.get("session_shutdown")?.();
+      const gone = await (async () => {
+        const deadline = Date.now() + 5_000;
+        while (Date.now() < deadline) {
+          if (!(await boardPeerPresent())) return true;
+          await sleep(100);
+        }
+        return false;
+      })();
+      assert.ok(gone, "shutdown left the auto-joined peer in the room — handle leak");
+    } finally {
+      for (const [key, value] of saved) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 
   it("F5: a dead peer (broker restart) is detected and re-attached by ensurePeer", async (t) => {
