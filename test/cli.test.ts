@@ -395,7 +395,7 @@ describe("cli: watch prints the turn-boundary FAIL summary line", () => {
       const watch = h.spawnBg(["watch"]);
       await watch.waitLine(/watching mesh for new FAIL entries/);
       await h.spawnCli(["write", "--type", "FAIL", "--text", "watch sees this one"]);
-      await watch.waitLine(/⚠ board: 1 new FAIL — b2:watch sees this one/);
+      await watch.waitLine(/⚠ board\[.+\]: 1 new FAIL — b2:watch sees this one/);
       await watch.stop();
       await join.stop();
     } finally {

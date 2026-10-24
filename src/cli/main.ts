@@ -267,6 +267,7 @@ async function cmdJoin(parsed: ParsedArgs): Promise<number> {
         const result = await announceWrite(peer, {
           id: entry.id,
           type: entry.type as "OBSERVED" | "FACT" | "FAIL" | "CLAIM" | "PATCH_SUMMARY",
+          room,
           short: typeof entry.text === "string" ? entry.text : "",
           at: entry.at,
         });
@@ -310,6 +311,7 @@ async function cmdWatch(): Promise<number> {
     const entries = store.read(500).map((entry) => ({
       id: entry.id,
       type: entry.type as "OBSERVED" | "FACT" | "FAIL" | "CLAIM" | "PATCH_SUMMARY",
+      room: role.room,
       short: typeof entry.text === "string" ? entry.text : "",
       at: entry.at,
     }));

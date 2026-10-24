@@ -5,9 +5,10 @@
 // Node ≥ 21. Passing the compiled test files as EXPLICIT arguments works on
 // every supported Node version and platform. Discovery is recursive to
 // support nested suites.
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import path from "node:path";
+import { tmpdir } from "node:os";
+import path, { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const dir = path.resolve(
@@ -38,5 +39,42 @@ if (files.length === 0) {
   process.exit(1);
 }
 
-const res = spawnSync(process.execPath, ["--test", ...files], { stdio: "inherit" });
+const res = spawnSync(process.execPath, ["--test", ...files], {
+  stdio: "inherit",
+  // Spawn-proof the suite (pi-mesh ≥ 0.10.1): a client facing a missing
+  // broker fails fast instead of auto-spawning one — a leaked test broker
+  // must never outlive the run. Scoped to the test env only.
+  env: { ...process.env, MESH_NO_AUTO_BROKER: "1" },
+});
+reapOrphanTestBrokers();
 process.exit(res.status ?? 1);
+
+/** Kill brokers left behind by a crashed/timeout test. Scope: ONLY the
+ *  suite's own mkdtemp dirs (pi-board-*) — the user's live mesh runtime
+ *  (the default mesh-<uid> dir) is never touched. */
+function reapOrphanTestBrokers() {
+  const tmp = tmpdir();
+  let entries;
+  try {
+    entries = readdirSync(tmp).filter((d) => d.startsWith("pi-board-"));
+  } catch {
+    return;
+  }
+  for (const dir of entries) {
+    const lockPath = join(tmp, dir, "run", "broker.lock");
+    let pid;
+    try {
+      pid = Number.parseInt(readFileSync(lockPath, "utf8").trim(), 10);
+    } catch {
+      continue;
+    }
+    if (!Number.isInteger(pid) || pid <= 1) continue;
+    try {
+      process.kill(pid, 0); // liveness probe
+      process.kill(pid, "SIGTERM"); // Windows maps this to termination
+      console.log(`run-tests: reaped orphan test broker pid=${pid} (${dir})`);
+    } catch {
+      // already gone — nothing to do
+    }
+  }
+}

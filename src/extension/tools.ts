@@ -184,6 +184,7 @@ function execBoardWatch(getRuntime: GetRuntime, params: Record<string, unknown>)
   const notifiable: NotifiableEntry[] = board.read(board.store.limits.readWindowMax).map((e) => ({
     id: e.id,
     type: e.type,
+    room: e.room,
     short: e.text,
     at: e.at,
   }));

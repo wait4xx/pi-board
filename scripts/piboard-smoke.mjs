@@ -156,6 +156,7 @@ async function main() {
     if (broadcastSeen.length === 0) throw new Error("no broadcast frame arrived within 5s");
     const body = broadcastSeen[0].body ?? "";
     if (!body.includes("FAIL")) throw new Error(`frame body lacks the type: ${body}`);
+    if (!/^board\[.+\] FAIL /.test(body)) throw new Error(`frame body is not the room-tagged format: ${body}`);
     return body;
   });
   await step("piboard read shows the entry", () => {

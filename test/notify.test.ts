@@ -19,6 +19,7 @@ import {
 const ENTRY: NotifiableEntry = {
   id: "e_0001",
   type: "FAIL",
+  room: "boardroom",
   short: "retry-with-backoff falsified: 3/3 timeouts under load",
   at: new Date("2026-10-23T10:00:00Z").toISOString(),
 };
@@ -87,7 +88,7 @@ describe("task_0007: write announcement (E2E)", () => {
       assert.ok(f !== null, "watcher never saw the broadcast");
       assert.equal(f.room, "boardroom");
       assert.equal(f.body, broadcastBody(ENTRY));
-      assert.match(f.body ?? "", /board FAIL e_0001: /);
+      assert.match(f.body ?? "", /board\[boardroom\] FAIL e_0001: /);
       // constraint #5: normal priority — never urgent/force escalation
       assert.notEqual(f.priority, "urgent");
       assert.notEqual(f.priority, "force");
@@ -140,10 +141,10 @@ describe("task_0007: write announcement (E2E)", () => {
 
 describe("task_0007: FAIL summary line (unit)", () => {
   const fails: NotifiableEntry[] = [
-    { id: "e_1", type: "FAIL", short: "first falsified path", at: "2026-10-23T10:00:01Z" },
-    { id: "e_2", type: "FAIL", short: "second falsified path", at: "2026-10-23T10:00:02Z" },
-    { id: "e_3", type: "OBSERVED", short: "not a fail", at: "2026-10-23T10:00:03Z" },
-    { id: "e_0", type: "FAIL", short: "before the boundary", at: "2026-10-23T09:00:00Z" },
+    { id: "e_1", type: "FAIL", room: "boardroom", short: "first falsified path", at: "2026-10-23T10:00:01Z" },
+    { id: "e_2", type: "FAIL", room: "boardroom", short: "second falsified path", at: "2026-10-23T10:00:02Z" },
+    { id: "e_3", type: "OBSERVED", room: "boardroom", short: "not a fail", at: "2026-10-23T10:00:03Z" },
+    { id: "e_0", type: "FAIL", room: "boardroom", short: "before the boundary", at: "2026-10-23T09:00:00Z" },
   ];
 
   it("selects only FAIL entries newer than the boundary, oldest first", () => {
@@ -154,7 +155,7 @@ describe("task_0007: FAIL summary line (unit)", () => {
 
   it("renders one skimmable bounded line; nothing new renders nothing", () => {
     const line = failSummaryLine(selectNewFails(fails, Date.parse("2026-10-23T10:00:00Z")));
-    assert.match(line, /^⚠ board: 2 new FAIL — e_1:first falsified path \| e_2:/);
+    assert.match(line, /^⚠ board\[boardroom\]: 2 new FAIL — e_1:first falsified path \| e_2:/);
     assert.ok(line.length <= 400);
     assert.equal(failSummaryLine([]), "");
     assert.equal(failSummaryLine(selectNewFails(fails, Date.parse("2026-10-23T11:00:00Z"))), "");
