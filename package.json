@@ -1,6 +1,6 @@
 {
   "name": "pi-board",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Shared context board for pi-mesh — typed entries (OBSERVED/FACT/FAIL/CLAIM/PATCH_SUMMARY), bounded append-only storage with rotation and TTL, boolean full-text search. CLI-first (piboard). Zero runtime dependencies.",
   "type": "module",
   "license": "MIT",
