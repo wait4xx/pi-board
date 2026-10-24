@@ -221,6 +221,41 @@ describe("cli: pick round 1 (PR#1 comparison)", () => {
     }
   });
 
+  it("SPECS parser surface: help topics, unknown options, inline values, --, positional rejection", async () => {
+    const h = await harness();
+    try {
+      assert.equal((await h.spawnCli(["help"])).code, 0);
+      const helpWrite = await h.spawnCli(["help", "write"]);
+      assert.equal(helpWrite.code, 0);
+      assert.match(helpWrite.stdout, /--detail-file/);
+      assert.match(helpWrite.stdout, /--lease-ref/);
+      assert.equal((await h.spawnCli(["help", "bogus"])).code, 2);
+      const unknown = await h.spawnCli(["write", "--frobnicate", "x"]);
+      assert.equal(unknown.code, 2);
+      assert.match(unknown.stderr, /unknown option/);
+
+      const join = h.spawnBg(["join", "mesh"]);
+      await join.waitLine(/joined mesh as board-test \(member\)/);
+      // inline --opt=value form
+      await h.spawnCli(["write", "--type=FACT", "--text=inline form works"]);
+      const list = await h.spawnCli(["read", "--limit=5"]);
+      assert.match(list.stdout, /FACT .*inline form works/);
+      // `--` end-of-options: a query starting with dashes is still a query
+      const dashy = await h.spawnCli(["grep", "--", "--type=FACT"]);
+      assert.equal(dashy.code, 0, "no unknown-option error: after -- everything is a query");
+      assert.equal(dashy.stdout, "", "and the literal query honestly misses");
+      const plain = await h.spawnCli(["grep", "inline"]);
+      assert.match(plain.stdout, /inline form works/);
+      // write takes no positionals (usage, not a hidden ignore)
+      const pos = await h.spawnCli(["write", "stray", "--type", "FACT", "--text", "x"]);
+      assert.equal(pos.code, 2);
+      assert.match(pos.stderr, /no positional/);
+      await join.stop();
+    } finally {
+      await h.cleanup();
+    }
+  });
+
   it("grep --type/--limit flags: filter, cap, and honest usage errors", async () => {
     const h = await harness();
     try {

@@ -12,9 +12,7 @@
  * Exit codes: 0 ok · 1 error · 2 usage · 3 not_found (read --id) ·
  * 4 refused (observer / non-member write attempt).
  */
-import { closeSync, existsSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { readSync } from "node:fs";
-import { homedir } from "node:os";
+import { closeSync, existsSync, openSync, readFileSync, readSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { boardDir, BoardStore, stateRoot } from "../store/store.js";
 import { TypedBoard } from "../entries/board.js";
@@ -23,12 +21,8 @@ import { loadLimits } from "../shared/limits.js";
 import { checkWriteGate, gateRefusalText } from "../mesh/gates.js";
 import { announceWrite, failSummaryLine, selectNewFails } from "../mesh/notify.js";
 import { connectBoardPeer } from "../mesh/peer.js";
-
-export const EXIT_OK = 0;
-export const EXIT_ERROR = 1;
-export const EXIT_USAGE = 2;
-export const EXIT_NOT_FOUND = 3;
-export const EXIT_REFUSED = 4;
+import { parseArgs, specUsage, type ArgSpec, type ParsedArgs } from "./args.js";
+import { EXIT_ERROR, EXIT_NOT_FOUND, EXIT_OK, EXIT_REFUSED, EXIT_USAGE } from "./codes.js";
 
 /** Poll pace for the join daemon's announce loop and watch's boundary. */
 const ANNOUNCE_POLL_MS = 1_000;
@@ -42,8 +36,8 @@ interface RoleConfig {
   watermarkMs: number;
 }
 
-function rolePath(): string {
-  return join(stateRoot(), "board.json");
+function rolePath(env: NodeJS.ProcessEnv = process.env): string {
+  return join(stateRoot(env), "board.json");
 }
 
 /** The joined-role read, honestly three-stated: a config that EXISTS but
@@ -54,8 +48,8 @@ export type RoleRead =
   | { state: "valid"; role: RoleConfig }
   | { state: "corrupt"; path: string; problem: string };
 
-export function readRole(): RoleRead {
-  const path = rolePath();
+export function readRole(env: NodeJS.ProcessEnv = process.env): RoleRead {
+  const path = rolePath(env);
   if (!existsSync(path)) return { state: "absent" };
   let raw: Partial<RoleConfig>;
   try {
@@ -69,15 +63,16 @@ export function readRole(): RoleRead {
   return { state: "valid", role: { room: raw.room, alias: raw.alias, observer: raw.observer, watermarkMs: raw.watermarkMs ?? 0 } };
 }
 
-/** Every caller's shared handling: corrupt → usage error (exit 2) with the
- *  path; absent → the caller's not-joined wording. */
-function requireRole(): { ok: true; role: RoleConfig } | { ok: false; code: number } {
+/** Shared handling: corrupt → usage error naming the path; absent → the
+ *  caller's not-joined wording. */
+function requireRole(notJoinedWording: string): { ok: true; role: RoleConfig } | { ok: false; code: number } {
   const read = readRole();
   if (read.state === "valid") return { ok: true, role: read.role };
   if (read.state === "corrupt") {
     process.stderr.write(`piboard: board config unreadable (${read.path}): ${read.problem} — fix or remove it\n`);
     return { ok: false, code: EXIT_USAGE };
   }
+  process.stderr.write(`piboard: ${notJoinedWording}\n`);
   return { ok: false, code: EXIT_ERROR };
 }
 
@@ -90,51 +85,89 @@ function writeRole(role: RoleConfig): void {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-function usage(out: NodeJS.WriteStream): void {
-  out.write(
-    [
-      "usage: piboard <command> [args]",
-      "",
-      "  piboard join <room> [--observer] [--alias NAME]   become the room's board presence",
-      "  piboard watch                                      print new-FAIL boundary lines (local)",
-      "  piboard write --type T --text \"…\" [--detail-file -|PATH] [--ref R] [--lease-ref ID]",
-      "  piboard read [--id ID] [--limit N]                 newest window, or one entry unfolded",
-      "  piboard grep \"a,b&c\"                                boolean search (, = OR, & = AND)",
-      "",
-      `types: ${ENTRY_TYPES.join(" | ")}`,
-    ].join("\n") + "\n",
-  );
+// ---- usage surface (SPECS-driven; the parser lives in args.ts) ----
+
+const JOIN_SPECS: ArgSpec[] = [
+  { name: "observer", kind: "flag", help: "join read-only (writes refused)" },
+  { name: "alias", kind: "value", meta: "A", help: 'peer alias (default $PI_BOARD_ALIAS or "board")' },
+];
+const WRITE_SPECS: ArgSpec[] = [
+  { name: "type", kind: "value", meta: "T", help: `one of ${ENTRY_TYPES.join(" | ")}` },
+  { name: "text", kind: "value", meta: "TXT", help: "summary line (≤280 bytes)" },
+  { name: "detail-file", kind: "value", meta: "PATH", help: "long form file, or - for stdin (≤8 KiB, bounded read)" },
+  { name: "ref", kind: "value", meta: "R", help: "git-reachable anchor (path, commit, URL)" },
+  { name: "lease-ref", kind: "value", meta: "L", help: "mesh_claim lease id (annotation only)" },
+];
+const READ_SPECS: ArgSpec[] = [
+  { name: "id", kind: "value", meta: "ID", help: "unfold this entry's detail" },
+  { name: "limit", kind: "value", meta: "N", help: "window size (capped by the configured max)" },
+];
+const GREP_SPECS: ArgSpec[] = [
+  { name: "type", kind: "value", meta: "T", help: "filter by entry type" },
+  { name: "limit", kind: "value", meta: "N", help: `max rows (default ${loadLimits().grepLimitDefault}, env-tunable)` },
+];
+const WATCH_SPECS: ArgSpec[] = [];
+
+interface CommandEntry {
+  usage: string;
+  specs: ArgSpec[];
+  run: (parsed: ParsedArgs) => Promise<number>;
 }
 
-/** Parse --flag value pairs; flags without values are booleans. */
-function parseFlags(args: string[]): { flags: Map<string, string | boolean>; positional: string[] } {
-  const flags = new Map<string, string | boolean>();
-  const positional: string[] = [];
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i]!;
-    if (arg.startsWith("--")) {
-      const name = arg.slice(2);
-      const next = args[i + 1];
-      if (next !== undefined && !next.startsWith("--")) {
-        flags.set(name, next);
-        i += 1;
-      } else {
-        flags.set(name, true);
-      }
-    } else {
-      positional.push(arg);
-    }
-  }
-  return { flags, positional };
+const COMMANDS = new Map<string, CommandEntry>([
+  ["join", { usage: "usage: piboard join <room> [--observer] [--alias A]", specs: JOIN_SPECS, run: (p) => cmdJoin(p) }],
+  ["write", { usage: 'usage: piboard write --type T --text "…" [--detail-file -|PATH] [--ref R] [--lease-ref L]', specs: WRITE_SPECS, run: (p) => cmdWrite(p) }],
+  ["read", { usage: "usage: piboard read [--id ID] [--limit N]", specs: READ_SPECS, run: (p) => cmdRead(p) }],
+  ["grep", { usage: 'usage: piboard grep "a,b&c" [--type T] [--limit N]  (, = OR, & = AND, ci)', specs: GREP_SPECS, run: (p) => cmdGrep(p) }],
+  ["watch", { usage: "usage: piboard watch  (prints new FAIL lines at each boundary until stopped)", specs: WATCH_SPECS, run: () => cmdWatch() }],
+]);
+
+const GENERAL_USAGE = `piboard — shared context board for pi-mesh (v0.1)
+
+usage: piboard <command> [options]
+
+commands:
+  join <room> [--observer] [--alias A]      become the room's board presence (announces writes)
+  write --type T --text "…" [options]       append a typed entry (needs a joined role)
+  read [--id ID] [--limit N]                newest window, or unfold one entry's detail
+  grep "a,b&c" [--type T] [--limit N]       boolean search (, = OR, & = AND, ci)
+  watch                                     print new FAIL lines as they land (local)
+  help [cmd]                                this help, or one command's options
+
+entry types: ${ENTRY_TYPES.join(" | ")}
+exit codes: 0 ok · 1 error · 2 usage · 3 not_found (read --id) · 4 refused (write gate)
+state: $PI_BOARD_STATE_DIR or ~/.pi-board/ (one directory per room)
+env: PI_BOARD_ALIAS (peer alias, default "board")`;
+
+function printGeneralUsage(): void {
+  process.stdout.write(`${GENERAL_USAGE}\n`);
 }
 
-function readDetailFile(value: string | boolean | undefined): string | undefined {
+function printCommandHelp(command: string): boolean {
+  const entry = COMMANDS.get(command);
+  if (entry === undefined) return false;
+  const options = entry.specs
+    .map((s) => `  --${s.name}${s.kind === "value" ? ` ${s.meta ?? s.name.toUpperCase()}` : ""}   ${s.help ?? ""}`)
+    .join("\n");
+  process.stdout.write(`${entry.usage}\n${options === "" ? "" : `${options}\n`}\n`);
+  return true;
+}
+
+function commandUsageError(command: string, reason: string): number {
+  const entry = COMMANDS.get(command);
+  process.stderr.write(`piboard: ${reason}\n`);
+  process.stderr.write(`${entry?.usage ?? ""}\n`);
+  return EXIT_USAGE;
+}
+
+function readDetailFile(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
-  if (typeof value !== "string") usageError("--detail-file needs a path (or - for stdin)");
   // An interactive terminal has nothing to pipe: reading it would HANG the
   // command waiting for input nobody will type — refuse with the fix.
-  if (value === "-" && stdinDetailGuard(process.stdin.isTTY === true) !== undefined) {
-    usageError(stdinDetailGuard(process.stdin.isTTY === true)!);
+  const guard = stdinDetailGuard(process.stdin.isTTY === true);
+  if (value === "-" && guard !== undefined) {
+    process.stderr.write(`piboard: ${guard}\n`);
+    process.exit(EXIT_USAGE);
   }
   // Bounded read: the byte bound must apply at INGESTION, never after the
   // whole stream has been loaded (DESIGN: never an unbounded blob).
@@ -160,18 +193,12 @@ export function stdinDetailGuard(isTty: boolean): string | undefined {
   return isTty ? "--detail-file - refuses an interactive terminal — pipe the content or pass a file path" : undefined;
 }
 
-function usageError(message: string): never {
-  process.stderr.write(`piboard: ${message}\n`);
-  usage(process.stderr);
-  process.exit(EXIT_USAGE);
-}
-
-async function cmdJoin(positional: string[], flags: Map<string, string | boolean>): Promise<number> {
-  const room = positional[0];
-  if (room === undefined || room === "") usageError("join needs a room: piboard join <room> [--observer]");
-  const aliasOverride = flags.get("alias");
-  const alias = typeof aliasOverride === "string" && aliasOverride !== "" ? aliasOverride : process.env.PI_BOARD_ALIAS ?? "board";
-  const observer = flags.get("observer") === true;
+async function cmdJoin(parsed: ParsedArgs): Promise<number> {
+  const room = parsed.positionals[0];
+  if (room === undefined || room === "") return commandUsageError("join", "join needs a room");
+  const aliasOverride = parsed.values.get("alias");
+  const alias = aliasOverride !== undefined && aliasOverride !== "" ? aliasOverride : process.env.PI_BOARD_ALIAS ?? "board";
+  const observer = parsed.flags.has("observer");
 
   const peer = await connectBoardPeer({
     room,
@@ -241,13 +268,8 @@ async function cmdJoin(positional: string[], flags: Map<string, string | boolean
 }
 
 async function cmdWatch(): Promise<number> {
-  const got = requireRole();
-  if (!got.ok) {
-    if (got.code === EXIT_ERROR) {
-      process.stderr.write("piboard: not joined — run `piboard join <room>` first (watch reads the joined room's board)\n");
-    }
-    return got.code;
-  }
+  const got = requireRole("not joined — run `piboard join <room>` first (watch reads the joined room's board)");
+  if (!got.ok) return got.code;
   const role = got.role;
   const store = new BoardStore(boardDir(role.room));
   let boundary = Date.now();
@@ -275,34 +297,30 @@ async function cmdWatch(): Promise<number> {
   return EXIT_OK;
 }
 
-async function cmdWrite(flags: Map<string, string | boolean>): Promise<number> {
+async function cmdWrite(parsed: ParsedArgs): Promise<number> {
+  if (parsed.positionals.length > 0) return commandUsageError("write", "write takes no positional arguments");
   // Usage validation precedes state checks everywhere: a malformed
   // invocation is a usage error whether or not a board has joined, and
   // whether or not the role would refuse the write.
-  const type = flags.get("type");
-  const text = flags.get("text");
-  if (typeof type !== "string" || typeof text !== "string" || text === "") {
-    usageError("write needs --type and --text");
+  const type = parsed.values.get("type");
+  const text = parsed.values.get("text");
+  if (type === undefined || text === undefined || text === "") {
+    return commandUsageError("write", "write needs --type and --text");
   }
   if (!isEntryType(type)) {
-    usageError(`--type must be one of ${ENTRY_TYPES.join("|")}, got: ${type}`);
+    return commandUsageError("write", `--type must be one of ${ENTRY_TYPES.join("|")}, got: ${type}`);
   }
-  const got = requireRole();
-  if (!got.ok) {
-    if (got.code === EXIT_ERROR) {
-      process.stderr.write("piboard: not joined — run `piboard join <room>` first (writes need a role)\n");
-    }
-    return got.code;
-  }
+  const got = requireRole("not joined — run `piboard join <room>` first (writes need a role)");
+  if (!got.ok) return got.code;
   const role = got.role;
   const gate = checkWriteGate({ observer: role.observer, room: role.room });
   if (!gate.ok) {
     process.stderr.write(`piboard: write refused (${gate.reason}): ${gateRefusalText(gate)}\n`);
     return EXIT_REFUSED;
   }
-  const detail = readDetailFile(flags.get("detail-file"));
-  const ref = flags.get("ref");
-  const leaseRef = flags.get("lease-ref");
+  const detail = readDetailFile(parsed.values.get("detail-file"));
+  const ref = parsed.values.get("ref");
+  const leaseRef = parsed.values.get("lease-ref");
   const board = TypedBoard.open(role.room);
   let draft: EntryDraft;
   try {
@@ -319,7 +337,7 @@ async function cmdWrite(flags: Map<string, string | boolean>): Promise<number> {
     });
   } catch (err) {
     // validation is a usage problem (closed type set, shapes), not a crash
-    usageError(err instanceof Error ? err.message : "invalid entry");
+    return commandUsageError("write", err instanceof Error ? err.message : "invalid entry");
   }
   const entry = board.write(draft as unknown as Record<string, unknown>);
   process.stdout.write(`${entry.id} ${entry.type} ${entry.text}\n`);
@@ -327,18 +345,14 @@ async function cmdWrite(flags: Map<string, string | boolean>): Promise<number> {
   return EXIT_OK;
 }
 
-async function cmdRead(flags: Map<string, string | boolean>): Promise<number> {
-  const got = requireRole();
-  if (!got.ok) {
-    if (got.code === EXIT_ERROR) {
-      process.stderr.write("piboard: not joined — run `piboard join <room>` first\n");
-    }
-    return got.code;
-  }
+async function cmdRead(parsed: ParsedArgs): Promise<number> {
+  if (parsed.positionals.length > 0) return commandUsageError("read", "read takes no positional arguments");
+  const got = requireRole("not joined — run `piboard join <room>` first");
+  if (!got.ok) return got.code;
   const role = got.role;
   const board = TypedBoard.open(role.room);
-  const id = flags.get("id");
-  if (typeof id === "string" && id !== "") {
+  const id = parsed.values.get("id");
+  if (id !== undefined && id !== "") {
     const entry = board.readById(id);
     if (entry === undefined) {
       process.stderr.write(`piboard: no entry ${id} on this board\n`);
@@ -348,38 +362,34 @@ async function cmdRead(flags: Map<string, string | boolean>): Promise<number> {
     if (entry.detail !== undefined) process.stdout.write(`${entry.detail}\n`);
     return EXIT_OK;
   }
-  const limitFlag = flags.get("limit");
-  if (limitFlag !== undefined && (typeof limitFlag !== "string" || !/^\d+$/.test(limitFlag))) {
-    usageError("--limit needs a positive integer");
+  const limitFlag = parsed.values.get("limit");
+  if (limitFlag !== undefined && !/^\d+$/.test(limitFlag)) {
+    return commandUsageError("read", "--limit needs a positive integer");
   }
-  const limit = typeof limitFlag === "string" ? Number.parseInt(limitFlag, 10) : undefined;
+  const limit = limitFlag !== undefined ? Number.parseInt(limitFlag, 10) : undefined;
   for (const entry of board.read(limit)) {
     process.stdout.write(`${entry.id} ${entry.type} ${entry.at} ${entry.author}: ${entry.text}\n`);
   }
   return EXIT_OK;
 }
 
-async function cmdGrep(positional: string[], flags: Map<string, string | boolean>): Promise<number> {
+async function cmdGrep(parsed: ParsedArgs): Promise<number> {
+  if (parsed.positionals.length > 1) return commandUsageError("grep", "grep takes exactly one query argument");
   // Usage validation before state checks: a malformed invocation is a
   // usage error whether or not a board has joined.
-  const query = positional[0];
-  if (query === undefined || query === "") usageError("grep needs a query: piboard grep \"a,b&c\"");
-  const typeFlag = flags.get("type");
-  if (typeFlag !== undefined && (typeof typeFlag !== "string" || !isEntryType(typeFlag))) {
-    usageError(`--type must be one of ${ENTRY_TYPES.join("|")}, got: ${String(typeFlag)}`);
+  const query = parsed.positionals[0];
+  if (query === undefined || query === "") return commandUsageError("grep", 'grep needs a query: piboard grep "a,b&c"');
+  const typeFlag = parsed.values.get("type");
+  if (typeFlag !== undefined && !isEntryType(typeFlag)) {
+    return commandUsageError("grep", `--type must be one of ${ENTRY_TYPES.join("|")}, got: ${typeFlag}`);
   }
-  const limitFlag = flags.get("limit");
-  if (limitFlag !== undefined && (typeof limitFlag !== "string" || !/^\d+$/.test(limitFlag) || Number.parseInt(limitFlag, 10) <= 0)) {
-    usageError("--limit needs a positive integer");
+  const limitFlag = parsed.values.get("limit");
+  if (limitFlag !== undefined && (!/^\d+$/.test(limitFlag) || Number.parseInt(limitFlag, 10) <= 0)) {
+    return commandUsageError("grep", "--limit needs a positive integer");
   }
-  const limit = typeof limitFlag === "string" ? Number.parseInt(limitFlag, 10) : undefined;
-  const got = requireRole();
-  if (!got.ok) {
-    if (got.code === EXIT_ERROR) {
-      process.stderr.write("piboard: not joined — run `piboard join <room>` first\n");
-    }
-    return got.code;
-  }
+  const limit = limitFlag !== undefined ? Number.parseInt(limitFlag, 10) : undefined;
+  const got = requireRole("not joined — run `piboard join <room>` first");
+  if (!got.ok) return got.code;
   const role = got.role;
   const board = TypedBoard.open(role.room);
   let rows;
@@ -389,7 +399,7 @@ async function cmdGrep(positional: string[], flags: Map<string, string | boolean
       ...(typeof typeFlag === "string" ? { type: typeFlag } : {}),
     });
   } catch (err) {
-    usageError(err instanceof Error ? err.message : "invalid query");
+    return commandUsageError("grep", err instanceof Error ? err.message : "invalid query");
   }
   for (const { entry, matchedInDetail } of rows) {
     process.stdout.write(`${entry.id} ${entry.type}${matchedInDetail ? " (in detail)" : ""} ${entry.text}\n`);
@@ -400,25 +410,34 @@ async function cmdGrep(positional: string[], flags: Map<string, string | boolean
 /** The command dispatcher. Returns the process exit code. */
 export async function runCli(argv: string[]): Promise<number> {
   const command = argv[0];
-  const rest = argv.slice(1);
-  const { flags, positional } = parseFlags(rest);
-  switch (command) {
-    case "join":
-      return cmdJoin(positional, flags);
-    case "watch":
-      return cmdWatch();
-    case "write":
-      return cmdWrite(flags);
-    case "read":
-      return cmdRead(flags);
-    case "grep":
-      return cmdGrep(positional, flags);
-    case undefined:
-    case "--help":
-    case "help":
-      usage(process.stdout);
-      return command === undefined ? EXIT_USAGE : EXIT_OK;
-    default:
-      usageError(`unknown command: ${command}`);
+  if (command === undefined || command === "") {
+    printGeneralUsage();
+    return EXIT_USAGE;
   }
+  if (command === "help" || command === "--help" || command === "-h") {
+    const topic = argv[1];
+    if (topic === undefined) {
+      printGeneralUsage();
+      return EXIT_OK;
+    }
+    if (printCommandHelp(topic)) return EXIT_OK;
+    process.stderr.write(`piboard: no such command: ${topic}\n`);
+    printGeneralUsage();
+    return EXIT_USAGE;
+  }
+
+  const entry = COMMANDS.get(command);
+  if (entry === undefined) {
+    process.stderr.write(`piboard: unknown command "${command}"\n`);
+    printGeneralUsage();
+    return EXIT_USAGE;
+  }
+  const res = parseArgs(argv.slice(1), entry.specs);
+  if (!res.ok) return commandUsageError(command, res.error);
+  if (res.help) {
+    process.stdout.write(`${entry.usage} ${specUsage(entry.specs)}\n`);
+    printCommandHelp(command);
+    return EXIT_OK;
+  }
+  return entry.run(res.parsed);
 }
