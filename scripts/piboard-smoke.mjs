@@ -14,7 +14,7 @@
 // [FAIL] + non-zero exit. Steps that can run without the CLI (broker,
 // watcher peer) run for real regardless.
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -177,6 +177,71 @@ async function main() {
           broadcastSeen.map((f) => JSON.stringify(f.body)).join(" | "),
       );
     }
+  });
+
+  // ---- v0.2 extension chain: auto-join observer → refused → upgrade → written → daemon announces ----
+  const extDriver = `
+    const { buildBoardRuntime } = await import(process.argv[1] + "/src/extension/runtime.js");
+    const boardExtension = (await import(process.argv[1] + "/src/extension/index.js")).default;
+    const rt = buildBoardRuntime(process.env);
+    const tools = new Map();
+    const handlers = new Map();
+    boardExtension({
+      registerTool: (d) => tools.set(d.name, d),
+      on: (e, f) => handlers.set(e, f),
+    }, { runtime: () => rt });
+    handlers.get("session_start")?.();
+    const out = [];
+    const run = async (n, p) => {
+      const r = await tools.get(n).execute("c", p, undefined, undefined, undefined);
+      out.push(r.content[0].text.split("\\n")[0]);
+    };
+    await run("board_write", { type: "FAIL", text: process.argv[2] });
+    process.stdout.write(JSON.stringify({ refused: /observer_readonly/.test(out[0] ?? ""), first: out[0] }) + "\\n");
+    await rt.close();
+  `;
+  const DIST = path.resolve("dist");
+  const extSession = (stateDir, text) => {
+    mkdirSync(stateDir, { recursive: true });
+    const res = spawnSync(
+      process.execPath,
+      ["--input-type=module", "-e", extDriver, DIST, text],
+      { encoding: "utf8", env: { ...process.env, ...env, PI_BOARD_STATE_DIR: stateDir, PI_BOARD_ROOM: ROOM }, timeout: 20_000 },
+    );
+    return { code: res.status, out: `${res.stdout ?? ""}${res.stderr ?? ""}` };
+  };
+
+  await step("extension auto-join (no member config) is OBSERVER: board_write refused", async () => {
+    const r = extSession(path.join(root, "ext-obs-state"), "extension must not land");
+    if (r.code !== 0) throw new Error(`observer session crashed: ${r.out.slice(0, 300)}`);
+    const parsed = JSON.parse(r.out.trim().split("\n").pop() ?? "{}");
+    if (parsed.refused !== true) throw new Error(`gate did not refuse: ${JSON.stringify(parsed)}`);
+    return parsed.first ?? "";
+  });
+
+  await step("extension with a member config writes; the join DAEMON announces it", async () => {
+    // SAME state root as the daemon: the member config is the smoke's own
+    // join config, and the store the extension appends to is the store the
+    // daemon polls — that sharing is the whole v0.2 chain
+    const framesBefore = broadcastSeen.length;
+    const r = extSession(stateDir, "extension member writes land");
+    if (r.code !== 0) throw new Error(`member session crashed: ${r.out.slice(0, 300)}`);
+    const parsed = JSON.parse(r.out.trim().split("\n").pop() ?? "{}");
+    if (parsed.refused === true || !/extension member writes land/.test(parsed.first ?? "")) {
+      throw new Error(`member write did not land: ${JSON.stringify(parsed)}`);
+    }
+    // the daemon's watermark poll announces it — frame #2 reaches the watcher
+    const deadline = Date.now() + 8_000;
+    while (broadcastSeen.length < framesBefore + 1 && Date.now() < deadline) {
+      await sleep(150);
+    }
+    if (broadcastSeen.length !== framesBefore + 1) {
+      throw new Error(`daemon did not announce the extension write (${broadcastSeen.length} frames): ` + broadcastSeen.map((f) => JSON.stringify(f.body)).join(" | "));
+    }
+    if (!/extension member writes land/.test(broadcastSeen.at(-1)?.body ?? "")) {
+      throw new Error(`frame body mismatch: ${broadcastSeen.at(-1)?.body}`);
+    }
+    return broadcastSeen.at(-1)?.body ?? "";
   });
   await step("observer join + write is refused with a readable reason", async () => {
     const obsEnv = { ...env, PI_BOARD_STATE_DIR: path.join(root, "obs-state") };
