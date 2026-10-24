@@ -159,13 +159,21 @@ since the last boundary — cheap, skimmable, no urgent priority ever.
 piboard join <room> [--observer]
 piboard watch
 piboard write --type FAIL --text "…" [--detail-file -|PATH] [--ref R]
-piboard read [--id ID] [--limit N]
-piboard grep "a,b&c"
+piboard read [--id ID] [--limit N] [--room ROOM]
+piboard grep "a,b&c" [--type T] [--limit N] [--room ROOM]
 ```
 
 Honest exit codes (pi-mesh CLI convention): 0 ok · 1 error · 2 usage ·
 3 not_found (`read --id` unknown id) · 4 refused (observer/non-member
 write attempt). A grep miss is exit 0 with empty output.
+
+(Erratum, review round: `read`/`grep` accept a store-only room —
+`--room` flag > `$PI_BOARD_ROOM` > the joined config — so scripts can
+inspect any local board without joining. `write` deliberately keeps its
+join requirement: the role gate's premise is a configured identity, and
+a room-overridden write would be a gate bypass. `watch` reads the joined
+room only, for the same reason — a boundary digest is a room's presence
+behavior.)
 
 ## 7. Test strategy
 

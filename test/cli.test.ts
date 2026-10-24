@@ -123,13 +123,20 @@ describe("cli: usage and honest exit codes", () => {
     }
   });
 
-  it("write/read/grep before join fail with the honest not-joined error (exit 1)", async () => {
+  it("commands without any room resolve to honest errors (exit 1)", async () => {
     const h = await harness();
     try {
-      for (const args of [["write", "--type", "FACT", "--text", "x"], ["read"], ["grep", "x"], ["watch"]]) {
+      // write/watch still require a joined role (the gate's premise);
+      // read/grep need SOME room source — with none, "no room", not a guess.
+      for (const args of [["write", "--type", "FACT", "--text", "x"], ["watch"]]) {
         const res = await h.spawnCli(args);
         assert.equal(res.code, 1, `${args.join(" ")} before join`);
         assert.match(res.stderr, /not joined/);
+      }
+      for (const args of [["read"], ["grep", "x"]]) {
+        const res = await h.spawnCli(args);
+        assert.equal(res.code, 1, `${args.join(" ")} with no room source`);
+        assert.match(res.stderr, /no room/);
       }
     } finally {
       await h.cleanup();
@@ -216,6 +223,31 @@ describe("cli: pick round 1 (PR#1 comparison)", () => {
       assert.equal(res.code, 2);
       assert.match(res.stderr, /board config unreadable/);
       assert.match(res.stderr, /fix or remove it/);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  it("read/grep accept a store-only --room; write keeps its join requirement", async () => {
+    const h = await harness();
+    try {
+      // No join at all: --room makes reads script-friendly.
+      const board = new TypedBoard(new (await import("../src/store/store.js")).BoardStore(boardDir("mesh", h.childEnv)));
+      board.write({ type: "FACT", author: "seed", room: "mesh", text: "seeded without any join" });
+      const list = await h.spawnCli(["read", "--room", "mesh"]);
+      assert.equal(list.code, 0);
+      assert.match(list.stdout, /seeded without any join/);
+      const hit = await h.spawnCli(["grep", "seeded", "--room", "mesh"]);
+      assert.equal(hit.code, 0);
+      assert.match(hit.stdout, /FACT seeded without any join/);
+      // No room anywhere and no join: honest error.
+      const noRoom = await h.spawnCli(["read"]);
+      assert.equal(noRoom.code, 1);
+      assert.match(noRoom.stderr, /no room/);
+      // write has no --room option at all: the role gate's premise stands.
+      const gated = await h.spawnCli(["write", "--type", "FACT", "--text", "x", "--room", "mesh"]);
+      assert.equal(gated.code, 2);
+      assert.match(gated.stderr, /unknown option/);
     } finally {
       await h.cleanup();
     }
