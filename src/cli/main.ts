@@ -12,7 +12,7 @@
  * Exit codes: 0 ok · 1 error · 2 usage · 3 not_found (read --id) ·
  * 4 refused (observer / non-member write attempt).
  */
-import { closeSync, existsSync, openSync, readFileSync, readSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { boardDir, BoardStore, stateRoot } from "../store/store.js";
 import { TypedBoard } from "../entries/board.js";
@@ -100,6 +100,9 @@ function resolveReadRoom(values: Map<string, string>): { ok: true; room: string 
 }
 
 function writeRole(role: RoleConfig): void {
+  // A bare first run has no state root yet (issue #3: `piboard join` on a
+  // fresh machine died ENOENT here) — create it before the atomic write.
+  mkdirSync(stateRoot(), { recursive: true, mode: 0o700 });
   const target = rolePath();
   const tmp = `${target}.${process.pid}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(role, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });

@@ -3,7 +3,7 @@
 // refused through the CLI, the join daemon announcing, watch's FAIL line.
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -223,6 +223,45 @@ describe("cli: pick round 1 (PR#1 comparison)", () => {
       assert.equal(res.code, 2);
       assert.match(res.stderr, /board config unreadable/);
       assert.match(res.stderr, /fix or remove it/);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  it("a bare first run: join with no pre-created state dirs succeeds (issue #3)", async () => {
+    const h = await harness();
+    try {
+      // Nothing under this path exists — not the root, not the room dir.
+      const freshRoot = path.join(h.stateDir, "never", "created", "deeply");
+      // join is a long-running presence: watch for the joined line, then stop it
+      const child = spawn(process.execPath, [CLI, "join", "mesh"], {
+        env: { ...h.childEnv, PI_BOARD_STATE_DIR: freshRoot },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let out = "";
+      child.stdout!.on("data", (chunk: Buffer) => (out += chunk.toString()));
+      const deadline = Date.now() + 8_000;
+      while (Date.now() < deadline && !/joined mesh as board-test \(member\)/.test(out)) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      assert.match(out, /joined mesh as board-test \(member\)/, "the bare first-run join succeeded");
+      const stopped = new Promise<number>((resolve) => child.on("close", (c) => resolve(c ?? -1)));
+      child.kill("SIGTERM");
+      // Under load the graceful stop can be slow; escalate hard and ALWAYS
+      // wait for the exit — a lingering presence would hang the harness
+      // broker's close (learned the hard way in this very suite).
+      const code = await Promise.race([
+        stopped,
+        new Promise<number>((r) =>
+          setTimeout(() => {
+            child.kill("SIGKILL");
+            setTimeout(() => r(-9), 500);
+          }, 3_000),
+        ),
+      ]);
+      assert.equal(code, 0, `clean stop after first-run join (got ${code})`);
+      assert.equal(existsSync(path.join(freshRoot, "board.json")), true, "the config landed in the fresh root");
+      assert.equal(existsSync(path.join(freshRoot, "mesh", "segments")), true, "the room store landed too");
     } finally {
       await h.cleanup();
     }
