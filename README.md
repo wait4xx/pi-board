@@ -1,151 +1,175 @@
-# pi-board — shared context board for pi-mesh / pi-mesh 共享上下文板
+# pi-board
 
-**Status: v0.2 (CLI slice + native extension tools) — measured at commit
-`8dffd59`, Linux, Node 22. /
-状态：v0.2（CLI 切片 + 原生扩展工具）——提交 `8dffd59` 实测，Linux / Node 22。**
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-## Overview / 概述
+[![CI](https://github.com/wait4xx/pi-board/actions/workflows/ci.yml/badge.svg)](https://github.com/wait4xx/pi-board/actions/workflows/ci.yml)
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![Node](https://img.shields.io/badge/node-%3E%3D20-green.svg)
+![Platform](https://img.shields.io/badge/platform-Linux%20tested-lightgrey.svg)
+![Ecosystem](https://img.shields.io/badge/ecosystem-pi--mesh-8A2BE2.svg)
 
-A pi-mesh room has messages (`mesh_send`) and a workspace (git +
-`mesh_reserve`) — pi-board adds the missing third pillar: a **shared
-context board**. Five typed entry kinds — `OBSERVED` (something seen),
-`FACT` (verified truth), `FAIL` (a falsified path — searchable so the
-whole room stops re-burning budget on it), `CLAIM` (informational
-ownership note, paired with `mesh_claim` leases — the board never
-enforces), `PATCH_SUMMARY` (what a landed change did).
+**A shared context board for pi-mesh rooms — typed entries, bounded
+honest storage, boolean full-text search. The mesh stays a router,
+never a database.**
 
-pi-mesh 房间有消息（`mesh_send`）与工作区（git + `mesh_reserve`）——
-pi-board 补上缺失的第三支柱：**共享上下文板**。五种类型化条目：
-`OBSERVED`（所见）、`FACT`（已验证事实）、`FAIL`（被证伪的路径——可检索，
-让全网不再重烧预算）、`CLAIM`（信息性所有权标注，与 `mesh_claim` 租约配对
-——板不做强制）、`PATCH_SUMMARY`（已落地变更做了什么）。
+## Overview
 
-The board keeps a bounded append-only local store (JSONL segments with
-rotation, entry/byte caps that refuse rather than evict, TTL visibility,
-a fail-closed forbidden-key scan) and answers boolean full-text queries
-(`,` = OR, `&` = AND, case-insensitive, full TTL-visible span). It joins
-the mesh as a normal peer (member or read-only observer), announces
-writes as normal-priority broadcast frames, and puts NO storage in the
-broker — the mesh stays a router, never a database.
+A pi-mesh room already has messages (`mesh_send`) and a workspace (git +
+`mesh_reserve`). pi-board is the missing third pillar: durable, searchable
+**shared context**. Five typed entry kinds:
 
-板维护有界的 append-only 本地存储（JSONL 分段轮转、条数/字节上限拒写不
-驱逐、TTL 可见性、fail-closed 禁键扫描），并回答布尔全文检索（`,` = OR、
-`&` = AND、大小写不敏感、覆盖全 TTL 可见跨度）。它以普通 peer 身份接入
-mesh（成员或只读 observer），写入以普通优先级广播帧播报，**绝不在 broker
-里存任何东西**——mesh 只做路由，永远不是数据库。
+| Type | Meaning |
+|---|---|
+| `OBSERVED` | something seen — no commitment |
+| `FACT` | verified truth |
+| `FAIL` | a falsified path — searchable so the whole room stops re-burning budget on it |
+| `CLAIM` | informational ownership note, paired with `mesh_claim` leases (the board never enforces) |
+| `PATCH_SUMMARY` | what a landed change did |
 
-Design and maintainer constraints: [DESIGN.md](DESIGN.md) · delivery
-reconciliation: [docs/DELIVERY-RECON.md](docs/DELIVERY-RECON.md) ·
-contributing: [CONTRIBUTING.md](CONTRIBUTING.md).
+The board keeps a bounded append-only local store and answers boolean
+queries; it joins the mesh as a normal peer (member or read-only
+observer) and announces writes as normal-priority broadcast frames.
+**No storage ever goes into the broker.**
 
-设计与维护者约束：[DESIGN.md](DESIGN.md) · 交付对账：
-[docs/DELIVERY-RECON.md](docs/DELIVERY-RECON.md) · 贡献指南：
-[CONTRIBUTING.md](CONTRIBUTING.md)。
+Design contract: [DESIGN.md](DESIGN.md) · delivery reconciliation:
+[docs/DELIVERY-RECON.md](docs/DELIVERY-RECON.md) · contributing:
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Install / 安装
+## Install
+
+From source (the package is not on npm yet — no dead badge until it is):
 
 ```bash
-npm install && npm run build   # Node ≥ 20; zero runtime dependencies
+git clone https://github.com/wait4xx/pi-board.git
+cd pi-board
+npm ci            # or: npm install
+npm run build
 ```
 
-```bash
-npm install && npm run build   # Node ≥ 20；零运行时依赖
+Two modes of use:
+
+- **CLI only** — works with zero peer dependencies; every command except
+  `join` runs against the local store (`--room` needs no mesh at all).
+- **With a mesh** — install `pi-mesh-extension` alongside (any version
+  with the client core; the verified face spans 0.7.2–0.10.2). The board
+  never vendors or forks it; there is no broker-side component.
+
+Requirements: Node ≥ 20, zero runtime dependencies, Linux is the tested
+platform.
+
+## CLI reference
+
 ```
-
-## CLI usage / CLI 用法
-
-```bash
-piboard join <room> [--observer] [--alias A]   # the room's board presence
-piboard write --type FAIL --text "…" [--detail-file -|PATH] [--ref R] [--lease-ref L]
+piboard join <room> [--observer] [--alias A]
+piboard write --type T --text "…" [--detail-file -|PATH] [--ref R] [--lease-ref L]
 piboard read [--id ID] [--limit N] [--room ROOM]
 piboard grep "a,b&c" [--type T] [--limit N] [--room ROOM]
-piboard watch                                     # new-FAIL boundary lines
+piboard watch
+piboard help [cmd]
 ```
 
-`join` is the board's presence: the only announcer (a watermark-resumed
-loop that also announces entries written while it was down). `read`/
-`grep` accept a store-only `--room` (scripts need no join); `write`
-deliberately requires a joined role — the write gate's premise is a
-configured identity. Exit codes: `0` ok · `1` error · `2` usage ·
-`3` not_found (`read --id`) · `4` refused (observer/non-member write).
-A grep miss is exit 0 with empty output.
+| Command | What it does |
+|---|---|
+| `join` | become the room's board **presence**: the only announcer. A watermark-resumed loop broadcasts entries newer than its persisted cursor — including entries written while the presence was down (nothing silently lost, nothing replayed). |
+| `write` | append one typed entry. Requires a joined role — the write gate's premise is a configured identity. `--detail-file -` reads bounded stdin (interactive terminals are refused instead of hanging). |
+| `read` | newest window, or `--id` to unfold one entry's `detail` (the only path detail takes to a reader). `--room` / `$PI_BOARD_ROOM` enable store-only reads with no join at all. |
+| `grep` | boolean search over `text` AND `detail`, full TTL-visible span (rotated segments included). Miss = exit 0, empty output. |
+| `watch` | prints the turn-boundary `⚠ board: N new FAIL — …` line as new FAILs land (joined room only — a boundary digest is a presence behavior). |
 
-`join` 是板的在场面：唯一的播报者（watermark 续播循环，宕机期间的条目回
-归后补播）。`read`/`grep` 支持 store-only 的 `--room`（脚本无需 join）；
-`write` 刻意要求先 join——写闸的前提是配置身份。退出码：`0` 成功 ·
-`1` 错误 · `2` 用法 · `3` 未找到（`read --id`）· `4` 拒绝（observer/非成员
-写）。grep 无结果 = exit 0 + 空输出。
+Exit codes: `0` ok (a grep miss included) · `1` error · `2` usage ·
+`3` not_found (`read --id` unknown) · `4` refused (observer / non-member
+write attempt).
 
-## Native extension tools (v0.2) / 原生扩展工具（v0.2）
+Examples:
+
+```bash
+piboard join mesh --observer
+piboard write --type FAIL --text "port probe 13389 hangs" --detail-file -
+piboard read --id b7
+piboard grep "timeout,firewall&tls" --type FAIL --limit 5
+PI_BOARD_STATE_DIR=/tmp/demo piboard read --room mesh     # store-only, no join
+```
+
+Environment: `PI_BOARD_STATE_DIR` (state root, default `~/.pi-board`),
+`PI_BOARD_ALIAS` (peer alias, default `board`), `PI_BOARD_ROOM`
+(read-command room fallback), `PI_BOARD_OBSERVER=true` (force observer —
+the fail-safe direction only), plus one `PI_BOARD_<LIMIT>` override per
+bound (e.g. `PI_BOARD_ENTRY_TTL_MS`; invalid values are startup errors
+naming the variable).
+
+## Extension tools (v0.2)
 
 Loaded as a Pi extension, the board exposes four single-action tools:
-`board_write` / `board_read` (window, or `{ id }` to unfold detail) /
-`board_grep` (with `type` and `limit`) / `board_watch`. The extension
-**auto-joins as an observer by default** — read-only unless `piboard
-join` wrote an explicit member config; `$PI_BOARD_OBSERVER=true` can
-force observer even over a member config (the fail-safe direction
-only). It never spawns a broker on machines without one
-(`MESH_NO_AUTO_BROKER` during the connect window) and recovers a dead
-peer automatically; announces are room-tagged.
 
-作为 Pi 扩展加载后，板提供四个单动作工具：`board_write` / `board_read`
-（窗口读，或 `{ id }` 展开 detail）/ `board_grep`（支持 `type` 与 `limit`）/
-`board_watch`。扩展**默认以 observer 自动加入**——除非 `piboard join` 写入
-了显式成员配置，否则只读；`$PI_BOARD_OBSERVER=true` 可在成员配置之上强
-制 observer（仅限 fail-safe 方向）。无 broker 的机器上绝不自动拉起 broker
-（连接窗口内置 `MESH_NO_AUTO_BROKER`）；死 peer 自动恢复；播报带房间标。
+| Tool | Action |
+|---|---|
+| `board_write` | append a typed entry (same validation and gate as the CLI) |
+| `board_read` | window read, or `{ id }` to unfold detail |
+| `board_grep` | boolean search with `type` / `limit` filters |
+| `board_watch` | skim the room's recorded failures |
 
-## Design in one page / 一页设计
+The extension **auto-joins as an observer by default** — read-only until
+`piboard join` writes an explicit member config. `$PI_BOARD_OBSERVER=true`
+can force observer even over a member config (fail-safe direction only,
+never the reverse). On machines with no broker it never spawns one
+(`MESH_NO_AUTO_BROKER` during the connect window); a dead peer is
+recovered automatically; announces are room-tagged.
 
-- **Five maintainer constraints (upstream ruling, issue #13):** gates
-  mirror pi-mesh `routeMsg` semantics (membership before role); one
-  tool, one action; `board_read {id}` is the only detail unfold; CLAIM
-  is informational (enforcement lives in `mesh_claim`); FAIL at normal
-  priority with a turn-boundary summary line — no urgent frames.
-- **Storage honesty:** caps refuse (never evict — a referenced id must
-  not vanish); TTL is a visibility bound; torn tail lines never break
-  the write path; secrets fail closed at the scan, byte bounds measure
-  the final stored line; appends serialize across processes (O_EXCL).
-- **Search:** `,` = OR, `&` = AND (AND binds tighter), case-insensitive
-  over text AND detail, across rotated-but-alive segments; every row
-  carries the id; a detail-only hit is marked `(in detail)`.
+## Design in one page
 
-- **维护者五约束（上游裁决，issue #13）：** 闸镜像 pi-mesh `routeMsg` 语义
-  （先成员后角色）；一工具一动作；`board_read {id}` 是 detail 唯一出口；
-  CLAIM 纯信息性（强制在 `mesh_claim`）；FAIL 普通优先级 + 轮边界摘要行——
-  绝不用 urgent 帧。
-- **存储诚实：** 上限拒写不驱逐（被引用的 id 不许凭空消失）；TTL 是可见
-  性边界；撕裂尾行不断写路径；密钥扫描 fail-closed；字节上限按最终落盘
-  行度量；跨进程 append 以 O_EXCL 串行。
-- **检索：** `,` = OR、`&` = AND（AND 结合更紧），大小写不敏感，覆盖 text
-  与 detail、含已轮转但仍存活的段；每行必含 id；仅 detail 命中带
-  `(in detail)` 标记。
+**Storage (append-only, honest by construction).** JSONL segments rotate
+on a dual bound (entries/bytes); rotated segments are immutable and stay
+greppable. Global caps **refuse, never evict** — a referenced id must not
+silently vanish. TTL is a visibility bound (queries filter; physical
+pruning happens only when a fully-expired segment rotates; a torn tail
+line is skipped, never a write-path failure). Secret shapes fail closed
+at the scan; byte bounds measure the final stored line; appends serialize
+across processes via an O_EXCL lockfile so ids stay unique.
 
-## CLAIM ↔ mesh_claim / CLAIM 与 mesh_claim
+**Search.** `,` = OR, `&` = AND (AND binds tighter), case-insensitive
+substring over `text` and `detail`:
 
-A `CLAIM` entry (optionally `--lease-ref` / `leaseRef`) is the
-**information layer**; `mesh_claim` is the **enforcement layer**. The
-board records who claimed what and when, and correlates it with a lease
-id — it never blocks, never gates, never expires anything.
+| Query | Matches |
+|---|---|
+| `foo` | text or detail contains foo (ci) |
+| `foo,bar` | foo OR bar |
+| `foo&bar` | foo AND bar |
+| `foo,bar&baz` | foo OR (bar AND baz) |
 
-`CLAIM` 条目（可选 `--lease-ref` / `leaseRef`）是**信息层**；`mesh_claim`
-是**强制层**。板记录谁在何时认领了什么、并与租约 id 关联——但绝不阻断、
-不设闸、不让任何东西过期。
+Every row carries the entry id; a hit found only in `detail` is marked
+`(in detail)` — `read --id` is the natural follow-up.
 
-## Scale expectations / 规模预期
+**Gates & security model.** Same-user trust boundary (0600 endpoint,
+0600 records). Write paths check membership before observer role,
+mirroring pi-mesh `routeMsg`'s order, and decide on the **configured**
+identity — never on broker state — so a reconnect-role drift cannot open
+a write path. The mesh never carries a shell string: announce frames are
+closed-shape (type + id + short text), normal priority only.
 
-Queries scan the TTL-visible span (bounded by the caps: ≤ 50 000
-entries / 32 MiB), not indexed — deliberate for a local single-room
-board; past tens of thousands of live entries, grep latency degrades
+**Announce architecture.** One presence (`piboard join`) owns the peer
+connection and is the only announcer — a watermark-resumed loop that
+also covers entries written while it was down. One-shot writes never
+connect (no alias collision); `watch` renders the turn-boundary FAIL
+digest. FAIL is deliberately **normal** priority: a boundary summary
+line beats an urgent frame.
+
+## CLAIM ↔ mesh_claim
+
+A `CLAIM` entry (optionally `--lease-ref`) is the **information layer**;
+`mesh_claim` is the **enforcement layer**. The board records who claimed
+what, when, and correlates the lease id — it never blocks, gates, or
+expires anything.
+
+## Scale expectations
+
+Queries scan the TTL-visible span (bounded by the caps: ≤ 50 000 entries
+/ 32 MiB on disk), not indexed — deliberate for a local single-room
+board. Past tens of thousands of live entries, grep latency degrades
 linearly. Indexes and multi-machine search are future territory.
 
-查询扫描全 TTL 可见跨度（受上限约束：≤ 5 万条 / 32 MiB），无索引——本地
-单房板的刻意取舍；存活条目过数万后 grep 延迟线性劣化。索引与多机检索
-属后续议题。
+## Measured at closeout
 
-## Measured at v0.2 closeout / v0.2 收官实测
-
-At commit `8dffd59` (Linux, Node 22), re-runnable from a clean clone:
+At commit `02becb2` (Linux, Node 22), re-runnable from a clean clone:
 
 | Claim | Evidence |
 |---|---|
@@ -153,24 +177,47 @@ At commit `8dffd59` (Linux, Node 22), re-runnable from a clean clone:
 | 75 tests / 0 fail / 0 skipped | `npm test` → `# tests 75 / pass 75 / fail 0 / skipped 0` |
 | 11-step smoke on a real broker | `npm run smoke` → `smoke: 11/11 ok, 0 skipped` (join → write → broadcast → read → grep → observer refused → exactly-one-frame → auto-join observer → member upgrade → …) |
 
-于提交 `8dffd59`（Linux / Node 22），干净克隆可复跑：
+Every number above was run at the cited tree before being written down;
+[docs/DELIVERY-RECON.md](docs/DELIVERY-RECON.md) holds the full trail.
 
-| 声称 | 证据 |
-|---|---|
-| 严格构建零错误 | `npm run build --silent` → exit 0 |
-| 75 测试 / 0 失败 / 0 跳过 | `npm test` → `# tests 75 / pass 75 / fail 0 / skipped 0` |
-| 真 broker 11 步 smoke | `npm run smoke` → `smoke: 11/11 ok, 0 skipped`（join → write → 广播 → read → grep → observer 拒写 → 仅一帧 → auto-join observer → 成员升级 → …） |
+## Roadmap
 
-## Out of scope / 明确不做
+Deliberately out of scope today: broker-side storage (permanent red
+line), multi-room indexes, per-entry ACLs, urgent FAIL delivery, GUIs.
 
-Broker-side storage (permanent red line), multi-room indexes, per-entry
-ACLs, urgent FAIL delivery, GUIs, multi-machine distributed grep.
+v0.3+ candidates, in rough order of value: multi-machine search (grep
+federation across boards), an index for large spans, the urgent-FAIL
+question (does any room actually need it above a boundary line?), and
+watch cursors shared between CLI and extension. Nothing here is
+promised; scope changes go through the spec process.
 
-broker 内存储（永久红线）、多房间索引、条目级 ACL、urgent FAIL 投递、
-图形界面、多机分布式 grep。
+## FAQ
 
-## License / 许可证
+**Why is observer the auto-join default?**
+Because a read-only mistake is recoverable and a write-path mistake is
+not. An extension that joins silently should be able to READ the room's
+context immediately, but never surprise it with writes. Member power
+requires the explicit, human-visible act of `piboard join`.
+
+**Why does a daemon announce instead of each write connecting itself?**
+Two reasons: an alias collision (a one-shot write connecting under the
+presence's alias would fight it), and completeness — the presence's
+watermark loop announces entries written by ANY process while it watches,
+including ones written while it was down. Per-write connects would only
+ever cover the CLI's own writes.
+
+**Why do caps refuse instead of evicting old entries?**
+Because eviction makes referenced ids vanish: a board entry cited in a
+conversation (`read --id b42`) must not 404 because a cap rotated it
+away. Refusal is loud, honest, and the operator's call (widen a bound,
+or archive a segment — segments are plain JSONL).
+
+**The CLI says `board config unreadable … fix or remove it`. What happened?**
+`board.json` (written by `piboard join`) exists but is not valid JSON or
+is missing fields — often a partially written file after a crash. Fix the
+file or delete it and re-join; the CLI reports the exact path and problem
+instead of misleading you with "not joined".
+
+## License
 
 MIT — see [LICENSE](LICENSE).
-
-MIT——见 [LICENSE](LICENSE)。
