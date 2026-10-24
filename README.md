@@ -35,6 +35,51 @@ Design contract: [DESIGN.md](DESIGN.md) · delivery reconciliation:
 [docs/DELIVERY-RECON.md](docs/DELIVERY-RECON.md) · contributing:
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## The pi-mesh stack
+
+pi-board is one layer of a small stack of cooperating tools:
+
+```
+ the pi-mesh stack
+ ┌───────────────────────────────────────────────────────────────┐
+ │ pi-mesh    messages · routing · rooms · policy · leases       │
+ │            github.com/cgarrot/pi-mesh                         │
+ ├───────────────────────────────────────────────────────────────┤
+ │ pi-board   shared context — this package                      │
+ ├───────────────────────────────────────────────────────────────┤
+ │ pi-jobd    background execution + orphan adoption             │
+ │            github.com/cgarrot/pi-jobd  (newborn: v0.1.0)      │
+ └───────────────────────────────────────────────────────────────┘
+ pi-subagents — worker control on top of the mesh (companion tool)
+```
+
+- **[pi-mesh](https://github.com/cgarrot/pi-mesh)** — the backbone:
+  messages, routing, rooms, policy, capability routing and task leases.
+- **pi-board** (this repo) — the room's shared context: typed entries,
+  honest bounded storage, boolean search. No broker-side storage.
+- **[pi-jobd](https://github.com/cgarrot/pi-jobd)** — detached
+  background jobs with honest states and orphan adoption after daemon
+  restarts (a newborn at v0.1.0; early days, Windows still
+  experimental).
+- **pi-subagents** — worker control on top of the mesh (spawn, steer,
+  follow up, abort).
+
+They compose: **discoveries land on the board**, conversation moves over
+the **mesh**, long work is handed to **jobd**, and exclusivity is a
+**`mesh_claim` lease** annotated by a **CLAIM entry**. For example:
+
+```text
+mesh_send  → "who has looked at the TLS failures?"        (conversation)
+board_grep → "tls"  → FAIL b17: handshake cert mismatch    (shared memory)
+mesh_run   → hand the rebuild to pi-jobd (background)        (long work)
+mesh_claim → { task: "rebuild", paths: ["dist/"] }          (exclusivity)
+board_write→ CLAIM "rebuild is mine" --lease-ref <leaseId>  (correlation)
+```
+
+The design lineage traces to the Agensh/DeLM thread on pi-mesh
+issue #13 — the full design story lives there and in [DESIGN.md](DESIGN.md);
+this section only maps the neighborhood.
+
 ## Install
 
 From source (the package is not on npm yet — no dead badge until it is):

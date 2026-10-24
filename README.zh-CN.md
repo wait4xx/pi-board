@@ -32,6 +32,48 @@ mesh（成员或只读 observer），写入以普通优先级广播帧播报。
 [docs/DELIVERY-RECON.md](docs/DELIVERY-RECON.md) · 贡献指南：
 [CONTRIBUTING.zh-CN.md](CONTRIBUTING.zh-CN.md)。
 
+## pi-mesh 技术栈
+
+pi-board 是一组协同工具栈中的一层：
+
+```
+ pi-mesh 技术栈
+ ┌───────────────────────────────────────────────────────────────┐
+ │ pi-mesh    消息 · 路由 · 房间 · policy · 租约                  │
+ │            github.com/cgarrot/pi-mesh                         │
+ ├───────────────────────────────────────────────────────────────┤
+ │ pi-board   共享上下文——本包                                   │
+ ├───────────────────────────────────────────────────────────────┤
+ │ pi-jobd    后台执行 + 孤儿收养                                 │
+ │            github.com/cgarrot/pi-jobd （新生：v0.1.0）        │
+ └───────────────────────────────────────────────────────────────┘
+ pi-subagents——构建在 mesh 之上的 worker 控制（配套工具）
+```
+
+- **[pi-mesh](https://github.com/cgarrot/pi-mesh)**——基座：消息、路由、
+  房间、policy、能力路由与任务租约。
+- **pi-board**（本仓库）——房间的共享上下文：类型化条目、诚实有界存储、
+  布尔检索。无任何 broker 侧存储。
+- **[pi-jobd](https://github.com/cgarrot/pi-jobd)**——分离式后台作业，
+  诚实状态与 daemon 重启后的孤儿收养（新生项目 v0.1.0；早期阶段，
+  Windows 仍属实验性）。
+- **pi-subagents**——构建在 mesh 之上的 worker 控制（派生、转向、跟进、
+  中止）。
+
+它们彼此组合：**发现落在板上**，**对话走 mesh**，**长活交给 jobd**，
+**独占用 `mesh_claim` 租约**并由 **CLAIM 条目**标注关联。例如：
+
+```text
+mesh_send  → "谁看过 TLS 失败这个问题？"                     （对话）
+board_grep → "tls"  → FAIL b17: 握手证书不匹配               （共享记忆）
+mesh_run   → 后台重建（pijob 式长活）                        （长活）
+mesh_claim → { task: "rebuild", paths: ["dist/"] }          （独占）
+board_write→ CLAIM "重建归我" --lease-ref <leaseId>          （关联）
+```
+
+设计谱系上溯至 pi-mesh issue #13 的 Agensh/DeLM 讨论线——完整设计
+故事在那里与 [DESIGN.md](DESIGN.md) 中；本节只画出邻里地图。
+
 ## 安装
 
 从源码安装（尚未发布到 npm——未上架前不上死徽标）：
