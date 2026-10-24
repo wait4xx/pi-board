@@ -52,10 +52,16 @@ export interface StoreOptions {
 }
 
 /** `<root>/<room>/`; root = `$PI_BOARD_STATE_DIR` or `~/.pi-board`. */
-export function boardDir(room: string, env: NodeJS.ProcessEnv = process.env): string {
+/** State root: `$PI_BOARD_STATE_DIR` or `~/.pi-board` (single source of
+ *  truth — the CLI reuses this for board.json instead of duplicating it). */
+export function stateRoot(env: NodeJS.ProcessEnv = process.env): string {
   const override = env.PI_BOARD_STATE_DIR;
-  const root = override !== undefined && override !== "" ? override : join(homedir(), ".pi-board");
-  return join(root, room);
+  return override !== undefined && override !== "" ? override : join(homedir(), ".pi-board");
+}
+
+/** `<root>/<room>/` — one directory per room. */
+export function boardDir(room: string, env: NodeJS.ProcessEnv = process.env): string {
+  return join(stateRoot(env), room);
 }
 
 export class BoardStore {

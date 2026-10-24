@@ -3,7 +3,7 @@
 // refused through the CLI, the join daemon announcing, watch's FAIL line.
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -39,8 +39,13 @@ async function harness(): Promise<Harness> {
     policy: DEFAULT_POLICY,
     stateDir,
   });
+  // Hermetic: inherited PI_BOARD_* from a developer shell must never leak
+  // into a test run (scrub first, then inject the test's own values).
+  const SCRUB_ENV_KEYS = ["PI_BOARD_STATE_DIR", "PI_BOARD_ROOM", "PI_BOARD_ALIAS", "PI_BOARD_AUTHOR"];
+  const base: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of SCRUB_ENV_KEYS) delete base[key];
   const childEnv = {
-    ...process.env,
+    ...base,
     MESH_RUNTIME_DIR: runDir,
     PI_BOARD_STATE_DIR: stateDir,
     PI_BOARD_ALIAS: "board-test",
@@ -199,6 +204,27 @@ describe("cli: member round-trip with the join daemon announcing", () => {
     } finally {
       await h.cleanup();
     }
+  });
+});
+
+describe("cli: pick round 1 (PR#1 comparison)", () => {
+  it("a corrupt board.json is a clean usage error with the path — never 'not joined'", async () => {
+    const h = await harness();
+    try {
+      writeFileSync(path.join(h.stateDir, "board.json"), "{ not json");
+      const res = await h.spawnCli(["read"]);
+      assert.equal(res.code, 2);
+      assert.match(res.stderr, /board config unreadable/);
+      assert.match(res.stderr, /fix or remove it/);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  it("an interactive terminal is refused for --detail-file - instead of hanging", async () => {
+    const { stdinDetailGuard } = await import("../src/cli/main.js");
+    assert.match(stdinDetailGuard(true) ?? "", /refuses an interactive terminal/);
+    assert.equal(stdinDetailGuard(false), undefined);
   });
 });
 

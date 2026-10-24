@@ -16,7 +16,7 @@ import { closeSync, existsSync, openSync, readFileSync, renameSync, writeFileSyn
 import { readSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { boardDir, BoardStore } from "../store/store.js";
+import { boardDir, BoardStore, stateRoot } from "../store/store.js";
 import { TypedBoard } from "../entries/board.js";
 import { ENTRY_TYPES, isEntryType, validateDraft, type EntryDraft } from "../entries/types.js";
 import { loadLimits } from "../shared/limits.js";
@@ -42,27 +42,43 @@ interface RoleConfig {
   watermarkMs: number;
 }
 
-/** Mirrors store.ts boardDir's root resolution (kept local: this module
- *  also needs the root itself for board.json). */
-function stateRoot(): string {
-  const override = process.env.PI_BOARD_STATE_DIR;
-  return override !== undefined && override !== "" ? override : join(homedir(), ".pi-board");
-}
-
 function rolePath(): string {
   return join(stateRoot(), "board.json");
 }
 
-function readRole(): RoleConfig | undefined {
+/** The joined-role read, honestly three-stated: a config that EXISTS but
+ *  cannot be trusted is NOT "not joined" — reporting it as such would send
+ *  the operator to re-join when the real fix is repairing the file. */
+export type RoleRead =
+  | { state: "absent" }
+  | { state: "valid"; role: RoleConfig }
+  | { state: "corrupt"; path: string; problem: string };
+
+export function readRole(): RoleRead {
+  const path = rolePath();
+  if (!existsSync(path)) return { state: "absent" };
+  let raw: Partial<RoleConfig>;
   try {
-    const raw = JSON.parse(readFileSync(rolePath(), "utf8")) as Partial<RoleConfig>;
-    if (typeof raw.room !== "string" || typeof raw.alias !== "string" || typeof raw.observer !== "boolean") {
-      return undefined;
-    }
-    return { room: raw.room, alias: raw.alias, observer: raw.observer, watermarkMs: raw.watermarkMs ?? 0 };
-  } catch {
-    return undefined;
+    raw = JSON.parse(readFileSync(path, "utf8")) as Partial<RoleConfig>;
+  } catch (err) {
+    return { state: "corrupt", path, problem: err instanceof Error ? err.message : "not valid JSON" };
   }
+  if (typeof raw.room !== "string" || raw.room === "" || typeof raw.alias !== "string" || typeof raw.observer !== "boolean") {
+    return { state: "corrupt", path, problem: "room/alias/observer missing or wrong-typed" };
+  }
+  return { state: "valid", role: { room: raw.room, alias: raw.alias, observer: raw.observer, watermarkMs: raw.watermarkMs ?? 0 } };
+}
+
+/** Every caller's shared handling: corrupt → usage error (exit 2) with the
+ *  path; absent → the caller's not-joined wording. */
+function requireRole(): { ok: true; role: RoleConfig } | { ok: false; code: number } {
+  const read = readRole();
+  if (read.state === "valid") return { ok: true, role: read.role };
+  if (read.state === "corrupt") {
+    process.stderr.write(`piboard: board config unreadable (${read.path}): ${read.problem} — fix or remove it\n`);
+    return { ok: false, code: EXIT_USAGE };
+  }
+  return { ok: false, code: EXIT_ERROR };
 }
 
 function writeRole(role: RoleConfig): void {
@@ -115,6 +131,11 @@ function parseFlags(args: string[]): { flags: Map<string, string | boolean>; pos
 function readDetailFile(value: string | boolean | undefined): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "string") usageError("--detail-file needs a path (or - for stdin)");
+  // An interactive terminal has nothing to pipe: reading it would HANG the
+  // command waiting for input nobody will type — refuse with the fix.
+  if (value === "-" && stdinDetailGuard(process.stdin.isTTY === true) !== undefined) {
+    usageError(stdinDetailGuard(process.stdin.isTTY === true)!);
+  }
   // Bounded read: the byte bound must apply at INGESTION, never after the
   // whole stream has been loaded (DESIGN: never an unbounded blob).
   const maxBytes = loadLimits().maxDetailChars;
@@ -132,6 +153,11 @@ function readDetailFile(value: string | boolean | undefined): string | undefined
   } finally {
     if (fd !== 0) closeSync(fd);
   }
+}
+
+/** Extracted for a unit test: the refusal line for interactive stdin. */
+export function stdinDetailGuard(isTty: boolean): string | undefined {
+  return isTty ? "--detail-file - refuses an interactive terminal — pipe the content or pass a file path" : undefined;
 }
 
 function usageError(message: string): never {
@@ -157,8 +183,12 @@ async function cmdJoin(positional: string[], flags: Map<string, string | boolean
   // a FRESH join starts at now and announces nothing that already exists.
   // Either way the operator sees the honest count of skipped entries.
   const previous = readRole();
-  const resuming = previous !== undefined;
-  const watermarkMs = resuming ? previous.watermarkMs : Date.now();
+  if (previous.state === "corrupt") {
+    process.stderr.write(`piboard: board config unreadable (${previous.path}): ${previous.problem} — fix or remove it\n`);
+    return EXIT_USAGE;
+  }
+  const resuming = previous.state === "valid";
+  const watermarkMs = resuming ? previous.role.watermarkMs : Date.now();
   const role: RoleConfig = { room, alias, observer, watermarkMs };
   writeRole(role);
   const store = new BoardStore(boardDir(room));
@@ -211,11 +241,14 @@ async function cmdJoin(positional: string[], flags: Map<string, string | boolean
 }
 
 async function cmdWatch(): Promise<number> {
-  const role = readRole();
-  if (role === undefined) {
-    process.stderr.write("piboard: not joined — run `piboard join <room>` first (watch reads the joined room's board)\n");
-    return EXIT_ERROR;
+  const got = requireRole();
+  if (!got.ok) {
+    if (got.code === EXIT_ERROR) {
+      process.stderr.write("piboard: not joined — run `piboard join <room>` first (watch reads the joined room's board)\n");
+    }
+    return got.code;
   }
+  const role = got.role;
   const store = new BoardStore(boardDir(role.room));
   let boundary = Date.now();
   process.stdout.write(`watching ${role.room} for new FAIL entries\n`);
@@ -254,11 +287,14 @@ async function cmdWrite(flags: Map<string, string | boolean>): Promise<number> {
   if (!isEntryType(type)) {
     usageError(`--type must be one of ${ENTRY_TYPES.join("|")}, got: ${type}`);
   }
-  const role = readRole();
-  if (role === undefined) {
-    process.stderr.write("piboard: not joined — run `piboard join <room>` first (writes need a role)\n");
-    return EXIT_ERROR;
+  const got = requireRole();
+  if (!got.ok) {
+    if (got.code === EXIT_ERROR) {
+      process.stderr.write("piboard: not joined — run `piboard join <room>` first (writes need a role)\n");
+    }
+    return got.code;
   }
+  const role = got.role;
   const gate = checkWriteGate({ observer: role.observer, room: role.room });
   if (!gate.ok) {
     process.stderr.write(`piboard: write refused (${gate.reason}): ${gateRefusalText(gate)}\n`);
@@ -292,11 +328,14 @@ async function cmdWrite(flags: Map<string, string | boolean>): Promise<number> {
 }
 
 async function cmdRead(flags: Map<string, string | boolean>): Promise<number> {
-  const role = readRole();
-  if (role === undefined) {
-    process.stderr.write("piboard: not joined — run `piboard join <room>` first\n");
-    return EXIT_ERROR;
+  const got = requireRole();
+  if (!got.ok) {
+    if (got.code === EXIT_ERROR) {
+      process.stderr.write("piboard: not joined — run `piboard join <room>` first\n");
+    }
+    return got.code;
   }
+  const role = got.role;
   const board = TypedBoard.open(role.room);
   const id = flags.get("id");
   if (typeof id === "string" && id !== "") {
@@ -325,11 +364,14 @@ async function cmdGrep(positional: string[]): Promise<number> {
   // usage error whether or not a board has joined.
   const query = positional[0];
   if (query === undefined || query === "") usageError("grep needs a query: piboard grep \"a,b&c\"");
-  const role = readRole();
-  if (role === undefined) {
-    process.stderr.write("piboard: not joined — run `piboard join <room>` first\n");
-    return EXIT_ERROR;
+  const got = requireRole();
+  if (!got.ok) {
+    if (got.code === EXIT_ERROR) {
+      process.stderr.write("piboard: not joined — run `piboard join <room>` first\n");
+    }
+    return got.code;
   }
+  const role = got.role;
   const board = TypedBoard.open(role.room);
   let rows;
   try {
