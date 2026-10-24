@@ -214,7 +214,7 @@ linearly. Indexes and multi-machine search are future territory.
 
 ## Measured at closeout
 
-At commit `02becb2` (Linux, Node 22), re-runnable from a clean clone:
+At commit `dad72c4` (Linux, Node 22), re-runnable from a clean clone:
 
 | Claim | Evidence |
 |---|---|
