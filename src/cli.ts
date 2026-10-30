@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // src/cli.ts — the `piboard` bin entry (package.json bin → dist/src/cli.js).
 // Thin on purpose: the surface lives in src/cli/main.ts.
 import { runCli } from "./cli/main.js";

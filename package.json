@@ -29,7 +29,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node -e 'require(\"fs\").chmodSync(\"dist/src/cli.js\", 0o755)'",
     "test": "npm run build && node scripts/run-tests.mjs",
     "smoke": "node scripts/piboard-smoke.mjs",
     "prepublishOnly": "npm run build"
