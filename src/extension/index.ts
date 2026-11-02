@@ -5,7 +5,8 @@
 // runtime and AUTO-JOINS the board room when one is resolvable —
 // observer by default (v0.2 ruling), member only via an explicit
 // `piboard join`. session_shutdown closes the peer.
-import type { ExtensionAPI } from "./pi-types.js";
+import type { ExtensionAPI, SessionStartCtx } from "./pi-types.js";
+import { sessionStartId } from "./pi-types.js";
 import { registerTools, type GetRuntime } from "./tools.js";
 import { buildBoardRuntime, type BoardRuntime } from "./runtime.js";
 
@@ -22,13 +23,18 @@ export default function boardExtension(pi: ExtensionAPI, opts: BoardExtensionOpt
   // Tools answer `store-only` before session_start — never blocked.
   registerTools(pi, getRuntime);
 
-  pi.on("session_start", () => {
+  pi.on("session_start", (_event, ctx) => {
     // SYNCHRONOUS store-only build: tools are usable the instant this
     // fires — reads/greps never wait on the peer (availability contract,
     // runtime.ts). The peer attaches in the background; a down broker
-    // never blocks session start.
+    // never blocks session start. The ctx carries the session identity
+    // (sessionManager.getSessionId() — the real host contract; see
+    // pi-types.ts) used for session-scoped room resolution.
     try {
-      runtime = (opts.runtime ?? buildBoardRuntime)(process.env);
+      const identity: { cwd?: string; sessionId?: string } = { cwd: ctx?.cwd };
+      const id = sessionStartId(ctx);
+      if (id !== undefined) identity.sessionId = id;
+      runtime = (opts.runtime ?? ((env: NodeJS.ProcessEnv) => buildBoardRuntime(env, identity)))(process.env);
     } catch {
       runtime = null; // honest degraded mode: tools with explicit rooms still work
     }
