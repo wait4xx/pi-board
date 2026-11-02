@@ -1,0 +1,22 @@
+{
+  "schema": "pi-subagents.attestation.v1",
+  "runId": "delegate_1793625336382_t6mek7",
+  "agent": "oracle",
+  "model": "zai/glm-5.3",
+  "exitCode": 0,
+  "stopReason": "stop",
+  "outputHash": "a8c0455201615f58bd621bea8587688bad2d3a8fd95caf36f6b7bc16081d6af4",
+  "sessionHash": "e14e7f9ef3a880fa7b492d4d4ab47e25ba7c63cce602c8e567cfaf2b1e8e4002",
+  "usage": {
+    "turns": 23,
+    "input": 35427,
+    "output": 16409,
+    "cacheRead": 83776,
+    "cacheWrite": 0,
+    "cost": 0,
+    "contextTokens": 92361
+  },
+  "startedAt": "2026-11-02T13:15:36.382Z",
+  "endedAt": "2026-11-02T13:26:08.318Z",
+  "status": "complete"
+}

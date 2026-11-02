@@ -160,6 +160,18 @@ never the reverse). On machines with no broker it never spawns one
 (`MESH_NO_AUTO_BROKER` during the connect window); a dead peer is
 recovered automatically; announces are room-tagged.
 
+**Reads are session-scoped.** A session's default read room follows the
+SESSION — `$PI_BOARD_ROOM` > the session's mesh identity room(s)
+(`.mesh/identity-<sessionId>.json`, re-read live) > the machine's joined
+board — so an agent working in room Z is never handed room M's entries
+as default context. A multi-room identity never silently defaults: pick
+a room explicitly. Reading (or writing) a board that is not one of the
+session's rooms is **refused** (`not_your_room`) — reads can be forced
+deliberately with `crossRoom: true` (the result then opens with a
+`⚠ foreign board [room]` banner); writes have no escape (the write
+premise is membership). Sessions with no mesh identity keep the
+store-only freedom: any explicit room, no banner.
+
 ## Design in one page
 
 **Storage (append-only, honest by construction).** JSONL segments rotate

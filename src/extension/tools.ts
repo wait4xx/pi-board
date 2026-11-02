@@ -18,7 +18,18 @@ export type GetRuntime = () => BoardRuntime | null;
 
 const ROOM_PARAM = {
   type: "string",
-  description: "Board room; defaults to the session's auto-joined room ($PI_BOARD_ROOM or `piboard join`).",
+  description:
+    "Board room; defaults to YOUR session's room ($PI_BOARD_ROOM, your mesh identity, or the machine's joined board). Reading another room's board requires crossRoom: true — foreign context can skew your analysis.",
+};
+
+const WRITE_ROOM_PARAM = {
+  type: "string",
+  description: "Board room you are a member of (the machine's joined board); defaults to the joined room. Writing a room that is not yours is refused.",
+};
+
+const CROSS_ROOM_PARAM = {
+  type: "boolean",
+  description: "Deliberately read a board that is not one of your session's rooms. Only set it when the task explicitly names that room.",
 };
 
 const ENTRY_TYPE_ENUM = [...ENTRY_TYPES];
@@ -31,7 +42,7 @@ const BOARD_WRITE_PARAMETERS = {
     detail: { type: "string", description: "Optional long form — unfolded only by board_read { id }." },
     ref: { type: "string", description: "Optional git-reachable anchor (path, commit, URL)." },
     leaseRef: { type: "string", description: "Optional mesh_claim lease id — annotation only; enforcement never lives here." },
-    room: ROOM_PARAM,
+    room: WRITE_ROOM_PARAM,
   },
   required: ["type", "text"],
 } as const;
@@ -42,6 +53,7 @@ const BOARD_READ_PARAMETERS = {
     id: { type: "string", description: "Unfold this entry's detail (the only path detail takes to a reader)." },
     limit: { type: "number", description: "Window size (newest first), capped." },
     room: ROOM_PARAM,
+    crossRoom: CROSS_ROOM_PARAM,
   },
 } as const;
 
@@ -52,13 +64,14 @@ const BOARD_GREP_PARAMETERS = {
     type: { type: "string", enum: ENTRY_TYPE_ENUM, description: "Filter by entry type." },
     limit: { type: "number", description: "Max rows." },
     room: ROOM_PARAM,
+    crossRoom: CROSS_ROOM_PARAM,
   },
   required: ["query"],
 } as const;
 
 const BOARD_WATCH_PARAMETERS = {
   type: "object",
-  properties: { room: ROOM_PARAM },
+  properties: { room: ROOM_PARAM, crossRoom: CROSS_ROOM_PARAM },
 } as const;
 
 function badParams(message: string): ToolResult {
@@ -68,6 +81,48 @@ function badParams(message: string): ToolResult {
 function boardFor(runtime: BoardRuntime, room: unknown): TypedBoard {
   const target = typeof room === "string" && room !== "" ? room : undefined;
   return new TypedBoard(runtime.getStore(target));
+}
+
+/** Resolve the READ target room: explicit param > the session's readRoom
+ *  (identity/env — never the machine config). Enforces the foreign-read
+ *  gate: a session that HAS rooms cannot silently read another room's
+ *  board — that needs crossRoom:true (deliberate, banner-marked). A
+ *  session with NO rooms keeps the v0.2 store-only freedom: any explicit
+ *  room, no banner (nothing to judge foreignness against). */
+function resolveReadTarget(
+  runtime: BoardRuntime,
+  roomParam: unknown,
+  crossRoom: unknown,
+): { ok: true; room: string; foreign: boolean } | { ok: false; gate: boolean; error: string } {
+  const explicit = typeof roomParam === "string" && roomParam !== "" ? roomParam : undefined;
+  const deliberate = crossRoom === true;
+  if (explicit === undefined) {
+    if (runtime.readRoom === undefined) {
+      const hint =
+        runtime.rooms.length > 1
+          ? `you are in rooms [${runtime.rooms.join(", ")}] — pass room explicitly`
+          : "no default room for this session — pass room explicitly";
+      return { ok: false, gate: false, error: `board needs a room: ${hint}` };
+    }
+    return { ok: true, room: runtime.readRoom, foreign: false };
+  }
+  const foreign = runtime.rooms.length > 0 && !runtime.rooms.includes(explicit);
+  if (foreign && !deliberate) {
+    return {
+      ok: false,
+      gate: true,
+      error:
+        `not_your_room: "${explicit}" is not one of this session's rooms [${runtime.rooms.join(", ")}] — ` +
+        `foreign board context can skew your analysis; pass crossRoom: true only if the task explicitly names this room`,
+    };
+  }
+  return { ok: true, room: explicit, foreign };
+}
+
+/** First line of a deliberately-foreign read — the reader must SEE that
+ *  the context is not from its own room before absorbing it. */
+function foreignBanner(room: string): string {
+  return `⚠ foreign board [${room}] — context may not apply to your work`;
 }
 
 function entryLine(entry: Entry): string {
@@ -97,6 +152,17 @@ function execBoardWrite(getRuntime: GetRuntime, params: Record<string, unknown>)
   const gate = checkWriteGate({ observer: runtime.observer, room });
   if (!gate.ok) return textResult(`${gate.reason} — ${gate.detail}`);
 
+  // symmetric with the read gate: a session that HAS rooms cannot write
+  // a board that is not one of them — writing foreign context is strictly
+  // more damaging than reading it. No crossRoom escape on the write path:
+  // the board write premise is membership, not curiosity.
+  if (runtime.rooms.length > 0 && !runtime.rooms.includes(room)) {
+    return textResult(
+      `not_your_room: "${room}" is not one of this session's rooms [${runtime.rooms.join(", ")}] — ` +
+        `the write premise is membership; join that room's board first`,
+    );
+  }
+
   const board = boardFor(runtime, room);
   let entry: Entry;
   try {
@@ -123,7 +189,9 @@ function execBoardWrite(getRuntime: GetRuntime, params: Record<string, unknown>)
 function execBoardRead(getRuntime: GetRuntime, params: Record<string, unknown>): ToolResult {
   const runtime = getRuntime();
   if (runtime === null) return textResult("board: session runtime not ready — retry");
-  const board = boardFor(runtime, params.room);
+  const target = resolveReadTarget(runtime, params.room, params.crossRoom);
+  if (!target.ok) return target.gate === true ? textResult(target.error) : badParams(target.error);
+  const board = boardFor(runtime, target.room);
 
   const id = params.id;
   if (typeof id === "string" && id !== "") {
@@ -133,7 +201,7 @@ function execBoardRead(getRuntime: GetRuntime, params: Record<string, unknown>):
     if (typeof entry.detail === "string") lines.push("--- detail ---", entry.detail);
     if (typeof entry.ref === "string") lines.push(`ref: ${entry.ref}`);
     if (typeof entry.leaseRef === "string") lines.push(`lease: ${entry.leaseRef}`);
-    return textResult(lines.join("\n"));
+    return textResult((target.foreign ? [foreignBanner(target.room)] : []).concat(lines).join("\n"));
   }
 
   let limit = board.store.limits.readWindowDefault;
@@ -141,7 +209,9 @@ function execBoardRead(getRuntime: GetRuntime, params: Record<string, unknown>):
     limit = Math.min(params.limit, board.store.limits.readWindowMax);
   }
   const entries = board.read(limit);
-  return textResult(entries.length === 0 ? "(board is empty for this room)" : entries.map(entryLine).join("\n"));
+  if (entries.length === 0) return textResult("(board is empty for this room)");
+  const lines = entries.map(entryLine);
+  return textResult((target.foreign ? [foreignBanner(target.room)] : []).concat(lines).join("\n"));
 }
 
 // ---- board_grep ----
@@ -155,7 +225,9 @@ function execBoardGrep(getRuntime: GetRuntime, params: Record<string, unknown>):
   if (typeParam !== undefined && (typeof typeParam !== "string" || !isEntryType(typeParam))) {
     return badParams(`board_grep type must be one of ${ENTRY_TYPES.join(" | ")}`);
   }
-  const board = boardFor(runtime, params.room);
+  const target = resolveReadTarget(runtime, params.room, params.crossRoom);
+  if (!target.ok) return target.gate === true ? textResult(target.error) : badParams(target.error);
+  const board = boardFor(runtime, target.room);
   try {
     const rows = board.grep(query, {
       ...(typeParam !== undefined ? { type: typeParam as EntryType } : {}),
@@ -163,12 +235,11 @@ function execBoardGrep(getRuntime: GetRuntime, params: Record<string, unknown>):
     });
     // a miss is an honest empty — never an error, never invented rows;
     // a (in detail) marker points at the long form for board_read { id }
+    const lines = rows.map((r) => `${r.entry.id} ${r.entry.type}: ${r.entry.text}${r.matchedInDetail ? " (in detail)" : ""}`);
     return textResult(
-      rows.length === 0
-        ? "(no match)"
-        : rows
-            .map((r) => `${r.entry.id} ${r.entry.type}: ${r.entry.text}${r.matchedInDetail ? " (in detail)" : ""}`)
-            .join("\n"),
+      (target.foreign ? [foreignBanner(target.room)] : [])
+        .concat(rows.length === 0 ? ["(no match)"] : lines)
+        .join("\n"),
     );
   } catch (err) {
     return textResult(`error: ${err instanceof Error ? err.message : String(err)}`);
@@ -180,7 +251,9 @@ function execBoardGrep(getRuntime: GetRuntime, params: Record<string, unknown>):
 function execBoardWatch(getRuntime: GetRuntime, params: Record<string, unknown>): ToolResult {
   const runtime = getRuntime();
   if (runtime === null) return textResult("board: session runtime not ready — retry");
-  const board = boardFor(runtime, params.room);
+  const target = resolveReadTarget(runtime, params.room, params.crossRoom);
+  if (!target.ok) return target.gate === true ? textResult(target.error) : badParams(target.error);
+  const board = boardFor(runtime, target.room);
   const notifiable: NotifiableEntry[] = board.read(board.store.limits.readWindowMax).map((e) => ({
     id: e.id,
     type: e.type,
@@ -192,7 +265,8 @@ function execBoardWatch(getRuntime: GetRuntime, params: Record<string, unknown>)
   // the OLDEST failure, not the fresh one a turn needs first (the CLI
   // boundary variant keeps selectNewFails' oldest-first contract).
   const line = failSummaryLine(selectNewFails(notifiable, 0).reverse());
-  return textResult(line === "" ? "(no FAIL entries recorded)" : line);
+  if (line === "") return textResult("(no FAIL entries recorded)");
+  return textResult((target.foreign ? [foreignBanner(target.room)] : []).concat([line]).join("\n"));
 }
 
 // ---- registration ----
@@ -222,7 +296,9 @@ export function registerTools(pi: ExtensionAPI, getRuntime: GetRuntime): void {
     promptSnippet: "Read recent board entries, or unfold one entry.",
     promptGuidelines:
       "First action when picking up shared work: read the window to absorb what the room already knows. " +
-      "Use { id } to unfold detail — it is the only path the long form takes.",
+      "Use { id } to unfold detail — it is the only path the long form takes. " +
+      "NEVER import another room's board into your reasoning unless the task explicitly names that room " +
+      "(crossRoom: true) — foreign context can skew your analysis.",
     parameters: BOARD_READ_PARAMETERS,
     execute: (_toolCallId, params) => execBoardRead(getRuntime, params),
   });
@@ -236,7 +312,8 @@ export function registerTools(pi: ExtensionAPI, getRuntime: GetRuntime): void {
     promptSnippet: "Search board history before retrying an approach.",
     promptGuidelines:
       "BEFORE retrying an approach or asking a peer, grep the board — a FAIL hit saves the whole budget of " +
-      "that dead end. A detail match deserves a follow-up board_read { id }.",
+      "that dead end. A detail match deserves a follow-up board_read { id }. " +
+      "Grep YOUR room's board; a foreign room needs crossRoom:true and an explicit task reason.",
     parameters: BOARD_GREP_PARAMETERS,
     execute: (_toolCallId, params) => execBoardGrep(getRuntime, params),
   });

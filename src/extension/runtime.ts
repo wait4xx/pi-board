@@ -34,10 +34,20 @@ import { randomBytes } from "node:crypto";
 import { boardDir, BoardStore } from "../store/store.js";
 import { readRole } from "../cli/main.js";
 import { connectBoardPeer, type BoardPeer } from "../mesh/peer.js";
+import { readSessionRooms } from "./session-rooms.js";
 
 export interface BoardRuntime {
-  /** The board room for this session, when one is resolvable. */
+  /** The session's PRESENCE room (env > joined config) — the v0.2 chain,
+   *  unchanged: the peer/announce role and the write-gate premise. */
   room: string | undefined;
+  /** The session's DEFAULT READ room (env > single identity room > config
+   *  room). The identity OUTRANKS the config: an agent in room Z on a
+   *  machine whose board config says M defaults to Z, never M. */
+  readRoom: string | undefined;
+  /** Every room this session may call its own (env room + mesh identity
+   *  rooms + the machine's config room). The foreign-read gate judges
+   *  against this set. */
+  rooms: string[];
   /** Read-only membership (observer default — see the module comment). */
   observer: boolean;
   /** The presence peer — null while connecting / failed / none. */
@@ -65,6 +75,26 @@ export function sessionRoom(env: NodeJS.ProcessEnv = process.env): string | unde
   if (fromEnv !== undefined && fromEnv !== "") return fromEnv;
   const read = readRole(env);
   return read.state === "valid" ? read.role.room : undefined;
+}
+
+/** The session's DEFAULT READ room: $PI_BOARD_ROOM > exactly-one mesh
+ *  identity room > the joined config room (only when the identity
+ *  declares NOTHING). The identity outranks the config — an agent in
+ *  room Z on a machine whose board config says M defaults to Z, never M
+ *  — and a MULTI-room identity never silently defaults anywhere: pick a
+ *  room explicitly. The config room still counts as "yours": the
+ *  machine's own board room is never foreign to a session that could
+ *  write there (the write gate already treats it as "yours"). */
+export function sessionReadRoom(
+  env: NodeJS.ProcessEnv,
+  identityRooms: string[],
+  configRoom: string | undefined,
+): string | undefined {
+  const fromEnv = env.PI_BOARD_ROOM;
+  if (fromEnv !== undefined && fromEnv !== "") return fromEnv;
+  if (identityRooms.length === 1) return identityRooms[0];
+  if (identityRooms.length > 1) return undefined; // pick explicitly — never a silent default
+  return configRoom;
 }
 
 /** Observer resolution, fail-safe ordered: env-forced observer wins;
@@ -130,21 +160,44 @@ async function attachPeer(rt: BoardRuntime, env: NodeJS.ProcessEnv, attach: Atta
   }
 }
 
+/** Injection surface for tests / hosts: where to read the mesh identity
+ *  from. Production derives it from the session_start ctx (see index.ts). */
+export interface RuntimeIdentityOpts {
+  cwd?: string;
+  sessionId?: string;
+}
+
 /**
  * Build the runtime SYNCHRONOUSLY in store-only form (cheap, fs-only)
  * and start the background peer attach. Tools are usable the instant
  * this returns — the availability contract.
  */
-export function buildBoardRuntime(env: NodeJS.ProcessEnv = process.env): BoardRuntime {
+export function buildBoardRuntime(
+  env: NodeJS.ProcessEnv = process.env,
+  identity: RuntimeIdentityOpts = {},
+): BoardRuntime {
   const room = sessionRoom(env);
   const observer = sessionObserver(env);
   const read = readRole(env);
   const aliasBase = read.state === "valid" ? read.role.alias : "board";
+  const identityRooms = () => readSessionRooms(env, identity.cwd ?? process.cwd(), identity.sessionId);
+  const configRoom = read.state === "valid" ? read.role.room : undefined;
+  const computeRooms = () => [...new Set([env.PI_BOARD_ROOM ?? "", ...identityRooms(), configRoom ?? ""].filter((r) => r !== ""))];
+  const computeReadRoom = () => sessionReadRoom(env, identityRooms(), configRoom);
 
   const stores = new Map<string, BoardStore>();
   let attachBusy = false;
   const rt: BoardRuntime = {
     room,
+    // fresh on every access: pi-mesh writes the identity file
+    // asynchronously on client "ready" — a session_start snapshot would
+    // miss it for every NEW session (the fallback-to-config race)
+    get readRoom(): string | undefined {
+      return computeReadRoom();
+    },
+    get rooms(): string[] {
+      return computeRooms();
+    },
     observer,
     aliasBase,
     peer: null,
